@@ -1,121 +1,37 @@
-//=============================================================================
+ï»¿//=============================================================================
 //
-// ƒ‚ƒfƒ‹‚Ìˆ— [model.h]
+// ãƒ¢ãƒ‡ãƒ«ã®å‡¦ç† [model.h]
 // Author :
 //
 //=============================================================================
 #pragma once
 
 #include "main.h"
-#include "renderer.h"
-#include "SimpleArray.h"
-//*********************************************************
-// \‘¢‘Ì
-//*********************************************************
+#include "ObjImporter.h"
 
-// ƒ}ƒeƒŠƒAƒ‹\‘¢‘Ì
+#define MODEL_MAX_MATERIAL		(16)		// ï¼‘ãƒ¢ãƒ‡ãƒ«ã®Maxãƒãƒ†ãƒªã‚¢ãƒ«æ•°
 
-#define MODEL_MAX_MATERIAL		(16)		// ‚Pƒ‚ƒfƒ‹‚ÌMaxƒ}ƒeƒŠƒAƒ‹”
-
-
-// ƒ}ƒeƒŠƒAƒ‹\‘¢‘Ì
-struct MODEL_MATERIAL
-{
-	char						Name[256];
-	MATERIAL					Material;
-	char						TextureName[256];
-	ID3D11ShaderResourceView* Texture;
-
-	MODEL_MATERIAL()
-	{
-		Material.noTexSampling = 1;
-		Material.LoadMaterial = FALSE;
-		Material.Ambient = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
-		Material.Diffuse = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
-		Material.Specular = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
-		Material.Emission = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
-		Material.Shininess = 0.0f;
-		Texture = NULL;
-	}
-};
-
-// •`‰æƒTƒuƒZƒbƒg\‘¢‘Ì
-struct SUBSET
-{
-	unsigned short	StartIndex;
-	unsigned short	IndexNum;
-	MODEL_MATERIAL	Material;
-
-	SUBSET()
-	{
-		StartIndex = 0;
-		IndexNum = 0;
-	}
-};
-
-// ƒ‚ƒfƒ‹\‘¢‘Ì
-struct MODEL
-{
-	VERTEX_3D* VertexArray;
-	unsigned short	VertexNum;
-	unsigned short* IndexArray;
-	unsigned short	IndexNum;
-	SUBSET* SubsetArray;
-	unsigned short	SubsetNum;
-};
-
-
-struct DX11_MODEL_MATERIAL
-{
-	MATERIAL					Material;
-	ID3D11ShaderResourceView	*Texture;
-};
-
-// •`‰æƒTƒuƒZƒbƒg\‘¢‘Ì
-struct DX11_SUBSET
-{
-	unsigned short	StartIndex;
-	unsigned short	IndexNum;
-	DX11_MODEL_MATERIAL	Material;
-};
-
-struct DX11_MODEL
-{
-	ID3D11Buffer*	VertexBuffer;
-	ID3D11Buffer*	IndexBuffer;
-
-	//DX11_SUBSET		*SubsetArray;
-	//unsigned short	SubsetNum;
-
-	MODEL*			modelData;
-	SimpleArray<SimpleArray<VERTEX_3D>*> newVertexArrays;
-	SimpleArray<SimpleArray<VERTEX_3D>*> oldVertexArrays;
-	SimpleArray<MODEL_MATERIAL> newSubsetMaterial;
-	SimpleArray<MODEL_MATERIAL> oldSubsetMaterial;
-
-	DX11_MODEL() 
-	{
-		modelData = new MODEL;
-		VertexBuffer = NULL;
-		IndexBuffer = NULL;
-
-	}
-};
 
 
 
 //*****************************************************************************
-// ƒvƒƒgƒ^ƒCƒvéŒ¾
+// ãƒ—ãƒ­ãƒˆã‚¿ã‚¤ãƒ—å®£è¨€
 //*****************************************************************************
-void LoadModel( char *FileName, DX11_MODEL *Model );
+// ãƒ¢ãƒ‡ãƒ«ã®èª­ã¿è¾¼ã¿ã«æˆåŠŸã—ãŸå ´åˆã¯trueã€å¤±æ•—ã—ãŸå ´åˆã¯falseã‚’è¿”ã™ã€‚
+// èª­ã¿è¾¼ã¿å…ˆã«ã¯ã€æ—¢å­˜ãƒªã‚½ãƒ¼ã‚¹ã‚’æŒãŸãªã„ãƒ¢ãƒ‡ãƒ«ã‚’æŒ‡å®šã™ã‚‹ã€‚
+bool LoadModel( const char *FileName, DX11_MODEL *Model );
+// ãƒ¢ãƒ‡ãƒ«ãŒæ‰€æœ‰ã™ã‚‹æç”»ãƒªã‚½ãƒ¼ã‚¹ã¨CPUå´ãƒ‡ãƒ¼ã‚¿ã‚’è§£æ”¾ã™ã‚‹
 void UnloadModel( DX11_MODEL *Model );
 void DrawModel( DX11_MODEL *Model );
 
-// ƒ‚ƒfƒ‹‚Ìƒ}ƒeƒŠƒAƒ‹‚ÌƒfƒBƒtƒ…[ƒY‚ğæ“¾‚·‚éBMax16ŒÂ•ª‚É‚µ‚Ä‚ ‚é
+// ãƒ¢ãƒ‡ãƒ«ã®ãƒãƒ†ãƒªã‚¢ãƒ«ã®ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºã‚’å–å¾—ã™ã‚‹ã€‚Max16å€‹åˆ†ã«ã—ã¦ã‚ã‚‹
 void GetModelDiffuse(DX11_MODEL *Model, XMFLOAT4 *diffuse);
 
-// ƒ‚ƒfƒ‹‚Ìw’èƒ}ƒeƒŠƒAƒ‹‚ÌƒfƒBƒtƒ…[ƒY‚ğƒZƒbƒg‚·‚éB
+// ãƒ¢ãƒ‡ãƒ«ã®æŒ‡å®šãƒãƒ†ãƒªã‚¢ãƒ«ã®ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºã‚’ã‚»ãƒƒãƒˆã™ã‚‹ã€‚
 void SetModelDiffuse(DX11_MODEL *Model, int mno, XMFLOAT4 diffuse);
+// Queued arrays transfer ownership to either update function and are always consumed.
+// Queue texture pointers are borrowed; committed subsets each own an AddRef.
+HRESULT TryUpdateModel(DX11_MODEL* Model);
 void UpdateModel(DX11_MODEL* Model);
 
 

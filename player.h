@@ -1,38 +1,38 @@
-//=============================================================================
+ï»¿//=============================================================================
 //
-// ƒ‚ƒfƒ‹ˆ— [player.h]
+// ãƒ¢ãƒ‡ãƒ«å‡¦ç† [player.h]
 // Author : 
 //
 //=============================================================================
 #pragma once
 #include "SimpleArray.h"
-#include "HashTable.h"
+#include "model.h"
 //*****************************************************************************
-// ƒ}ƒNƒ’è‹`
+// ãƒã‚¯ãƒ­å®šç¾©
 //*****************************************************************************
-#define MAX_PLAYER		(1)					// ƒvƒŒƒCƒ„[‚Ì”
+#define MAX_PLAYER		(1)					// ãƒ—ãƒ¬ã‚¤ãƒ¤ãƒ¼ã®æ•°
 
-#define	PLAYER_SIZE		(5.0f)				// “–‚½‚è”»’è‚Ì‘å‚«‚³
+#define	PLAYER_SIZE		(5.0f)				// å½“ãŸã‚Šåˆ¤å®šã®å¤§ãã•
 
 
 //*****************************************************************************
-// \‘¢‘Ì’è‹`
+// æ§‹é€ ä½“å®šç¾©
 //*****************************************************************************
 struct PLAYER
 {
-	XMFLOAT3		pos;		// ƒ|ƒŠƒSƒ“‚ÌˆÊ’u
-	XMFLOAT3		rot;		// ƒ|ƒŠƒSƒ“‚ÌŒü‚«(‰ñ“])
-	XMFLOAT3		scl;		// ƒ|ƒŠƒSƒ“‚Ì‘å‚«‚³(ƒXƒP[ƒ‹)
+	XMFLOAT3		pos;		// ãƒãƒªã‚´ãƒ³ã®ä½ç½®
+	XMFLOAT3		rot;		// ãƒãƒªã‚´ãƒ³ã®å‘ã(å›è»¢)
+	XMFLOAT3		scl;		// ãƒãƒªã‚´ãƒ³ã®å¤§ãã•(ã‚¹ã‚±ãƒ¼ãƒ«)
 
-	XMFLOAT4X4		mtxWorld;	// ƒ[ƒ‹ƒhƒ}ƒgƒŠƒbƒNƒX
+	XMFLOAT4X4		mtxWorld;	// ãƒ¯ãƒ¼ãƒ«ãƒ‰ãƒãƒˆãƒªãƒƒã‚¯ã‚¹
 
 	BOOL			load;
-	DX11_MODEL		model;		// ƒ‚ƒfƒ‹î•ñ
+	DX11_MODEL		model;		// ãƒ¢ãƒ‡ãƒ«æƒ…å ±
 
-	float			spd;		// ˆÚ“®ƒXƒs[ƒh
-	float			dir;		// Œü‚«
-	float			size;		// “–‚½‚è”»’è‚Ì‘å‚«‚³
-	int				shadowIdx;	// ‰e‚ÌIndex
+	float			spd;		// ç§»å‹•ã‚¹ãƒ”ãƒ¼ãƒ‰
+	float			dir;		// å‘ã
+	float			size;		// å½“ãŸã‚Šåˆ¤å®šã®å¤§ãã•
+	int				shadowIdx;	// å½±ã®Index
 	BOOL			use;
 
 
@@ -47,21 +47,8 @@ struct Plane
 	XMFLOAT4X4	localmtxWorld;
 };
 
-struct VertexWithAngle 
-{
-	VERTEX_3D vertex;
-	float angle;
-};
-
-struct IntersectPoints
-{
-	XMFLOAT3 point1;
-	XMFLOAT3 point2;
-	VERTEX_3D intersection;
-};
-
 //*****************************************************************************
-// ƒvƒƒgƒ^ƒCƒvéŒ¾
+// ãƒ—ãƒ­ãƒˆã‚¿ã‚¤ãƒ—å®£è¨€
 //*****************************************************************************
 HRESULT InitPlayer(void);
 void UninitPlayer(void);
@@ -74,9 +61,10 @@ void DrawCuttingPlane(void);
 void MakeCuttingPlaneVertex(void);
 void UpdateCuttingPlane(void);
 void CutMeshes(DX11_MODEL* model);
-void ProcessEdge(VERTEX_3D v1, VERTEX_3D v2, float d1, float d2, unsigned short idx1, unsigned short idx2, 
-	IntersectPoints* intersectionPoint, int* count, BOOL& potentialCut);
 void SetLocalCuttingPlane(void);
-SimpleArray<VERTEX_3D>* CheckAndCreateNewPlane(SimpleArray<VERTEX_3D>* cuttingPoints);
-void CreateNewPlane(SimpleArray<VERTEX_3D>* newPlane, SimpleArray<VERTEX_3D>* cuttingPoints);
-void InsertionSort(SimpleArray<VertexWithAngle>& vertices);
+void ResetPlayerPresentation(void);
+
+// æ–°ã—ã„ãƒ¢ãƒ‡ãƒ«ã®èª­ã¿è¾¼ã¿ã«æˆåŠŸã—ãŸå ´åˆã ã‘ã€ç¾åœ¨ã®ãƒ¢ãƒ‡ãƒ«ã‚’ç½®ãæ›ãˆã‚‹ã€‚
+bool ReplacePlayerModel(const char* FileName);
+// ãƒ¢ãƒ‡ãƒ«ã®ä½ç½®ã‚„å½¢çŠ¶ã‚’å¤‰æ›´ã›ãšã€é€²è¡Œä¸­ã®ãƒ‰ãƒ©ãƒƒã‚°æ“ä½œã ã‘ã‚’çµ‚äº†ã™ã‚‹ã€‚
+void CancelPlayerCutGesture(void);

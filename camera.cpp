@@ -41,19 +41,37 @@ static int				g_ViewPortType = TYPE_FULL_SCREEN;
 //=============================================================================
 void InitCamera(void)
 {
+	// 起動時と実行中のリセットで、同じ初期状態を使用する。
+	ResetCamera();
+}
+
+void ResetCamera(void)
+{
+	// 前回の操作で変更された値を残さないように、
+	// カメラ構造体の全メンバーを初期化する。
+	g_Camera = {};
+
+	// 視点、注視点、上方向を初期状態に戻す。
 	g_Camera.pos = { POS_X_CAM, POS_Y_CAM, POS_Z_CAM };
-	g_Camera.at  = { 0.0f, 0.0f, 0.0f };
-	g_Camera.up  = { 0.0f, 1.0f, 0.0f };
+	g_Camera.at = { 0.0f, 0.0f, 0.0f };
+	g_Camera.up = { 0.0f, 1.0f, 0.0f };
+
+	// カメラ操作で使用する回転角を初期状態に戻す。
 	g_Camera.rot = { 0.0f, 0.0f, 0.0f };
 
-	// 視点と注視点の距離を計算
-	float vx, vz;
-	vx = g_Camera.pos.x - g_Camera.at.x;
-	vz = g_Camera.pos.z - g_Camera.at.z;
-	g_Camera.len = sqrtf(vx * vx + vz * vz);
-	
+	// 水平面上での視点と注視点の距離を求める。
+	// 現在の旋回処理では、この距離を使用して視点を更新する。
+	const float dx = g_Camera.pos.x - g_Camera.at.x;
+	const float dz = g_Camera.pos.z - g_Camera.at.z;
+
+	g_Camera.len = sqrtf(dx * dx + dz * dz);
+
 	// ビューポートタイプの初期化
 	SetViewPort(g_ViewPortType);
+
+	// 更新後のカメラ情報から各行列を再計算し、
+	// レンダラーへ直ちに反映する。
+	SetCamera();
 }
 
 
@@ -159,8 +177,7 @@ void UpdateCamera(void)
 	// カメラを初期に戻す
 	if (GetKeyboardPress(DIK_R))
 	{
-		UninitCamera();
-		InitCamera();
+		ResetCamera();
 	}
 
 #endif

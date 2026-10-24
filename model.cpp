@@ -1,54 +1,45 @@
-//=============================================================================
+ï»¿//=============================================================================
 //
-// ƒ‚ƒfƒ‹‚Ìˆ— [model.cpp]
+// ãƒ¢ãƒ‡ãƒ«ã®å‡¦ç† [model.cpp]
 // Author : 
 //
 //=============================================================================
 #define _CRT_SECURE_NO_WARNINGS
 #include "main.h"
 #include "model.h"
+#include "ObjImporter.h"
 #include "camera.h"
-//*****************************************************************************
-// ƒ}ƒNƒ’è‹`
-//*****************************************************************************
-#define	VALUE_MOVE_MODEL	(0.50f)					// ˆÚ“®‘¬“x
-#define	RATE_MOVE_MODEL		(0.20f)					// ˆÚ“®Šµ«ŒW”
-#define	VALUE_ROTATE_MODEL	(XM_PI * 0.05f)			// ‰ñ“]‘¬“x
-#define	RATE_ROTATE_MODEL	(0.20f)					// ‰ñ“]Šµ«ŒW”
-#define	SCALE_MODEL			(10.0f)					// ‰ñ“]Šµ«ŒW”
+#include <memory>
+#include <limits>
+#include <new>
+
 
 
 //*****************************************************************************
-// \‘¢‘Ì’è‹`
+// æ§‹é€ ä½“å®šç¾©
 //*****************************************************************************
 
 
 //*****************************************************************************
-// ƒOƒ[ƒoƒ‹•Ï”
+// ã‚°ãƒ­ãƒ¼ãƒãƒ«å¤‰æ•°
 //*****************************************************************************
-
-
-//*****************************************************************************
-// ƒvƒƒgƒ^ƒCƒvéŒ¾
-//*****************************************************************************
-void LoadObj( char *FileName, MODEL *Model );
-void LoadMaterial( char *FileName, MODEL_MATERIAL **MaterialArray, unsigned short *MaterialNum );
 
 
 
 
 //=============================================================================
-// ‰Šú‰»ˆ—
+// åˆæœŸåŒ–å‡¦ç†
 //=============================================================================
-void LoadModel( char *FileName, DX11_MODEL *Model )
+bool LoadModel( const char *FileName, DX11_MODEL *Model )
 {
-	//MODEL model;
+	// OBJã¾ãŸã¯å‚ç…§å…ˆMTLã‚’èª­ã¿è¾¼ã‚ãªã‹ã£ãŸå ´åˆã¯ã€
+	// GPUãƒãƒƒãƒ•ã‚¡ã®ä½œæˆã¸é€²ã¾ãªã„ã€‚
+	if (!ObjImporter::LoadObj(FileName, Model->modelData))
+	{
+		return false;
+	}
 
-	LoadObj( FileName, Model->modelData);
-
-
-
-	// ’¸“_ƒoƒbƒtƒ@¶¬
+	// é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ç”Ÿæˆ
 	{
 		D3D11_BUFFER_DESC bd;
 		ZeroMemory( &bd, sizeof(bd) );
@@ -61,11 +52,17 @@ void LoadModel( char *FileName, DX11_MODEL *Model )
 		ZeroMemory( &sd, sizeof(sd) );
 		sd.pSysMem = Model->modelData->VertexArray;
 
-		GetDevice()->CreateBuffer( &bd, &sd, &Model->VertexBuffer );
+		// é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ã®ä½œæˆçµæœã‚’ç¢ºèªã™ã‚‹ã€‚
+		const HRESULT result = GetDevice()->CreateBuffer( &bd, &sd, &Model->VertexBuffer );
+		if (FAILED(result))
+		{
+			UnloadModel(Model);
+			return false;
+		}
 	}
 
 
-	// ƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@¶¬
+	// ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ç”Ÿæˆ
 	{
 		D3D11_BUFFER_DESC bd;
 		ZeroMemory( &bd, sizeof(bd) );
@@ -78,10 +75,16 @@ void LoadModel( char *FileName, DX11_MODEL *Model )
 		ZeroMemory( &sd, sizeof(sd) );
 		sd.pSysMem = Model->modelData->IndexArray;
 
-		GetDevice()->CreateBuffer( &bd, &sd, &Model->IndexBuffer );
+		// ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ã®ä½œæˆçµæœã‚’ç¢ºèªã™ã‚‹ã€‚
+		const HRESULT result = GetDevice()->CreateBuffer( &bd, &sd, &Model->IndexBuffer );
+		if (FAILED(result))
+		{
+			UnloadModel(Model);
+			return false;
+		}
 	}
 
-	// ƒTƒuƒZƒbƒgİ’è
+	// ã‚µãƒ–ã‚»ãƒƒãƒˆè¨­å®š
 	//{
 	//	Model->SubsetArray = new DX11_SUBSET[Model->model->SubsetNum ];
 	//	Model->SubsetNum = Model->model->SubsetNum;
@@ -106,56 +109,94 @@ void LoadModel( char *FileName, DX11_MODEL *Model )
 	//delete[] model.IndexArray;
 	//delete[] model.SubsetArray;
 
-
+		// CPUå´ã®ãƒ¢ãƒ‡ãƒ«ãƒ‡ãƒ¼ã‚¿ã¨ã€æç”»ç”¨ãƒãƒƒãƒ•ã‚¡ã®æº–å‚™ãŒå®Œäº†ã—ãŸã€‚
+		return true;
 }
 
 
 //=============================================================================
-// I—¹ˆ—
+// çµ‚äº†å‡¦ç†
 //=============================================================================
-void UnloadModel( DX11_MODEL *Model )
+void UnloadModel(DX11_MODEL* model)
 {
+	if (model == nullptr)
+		return;
 
-	if( Model->VertexBuffer )		Model->VertexBuffer->Release();
-	if( Model->IndexBuffer )		Model->IndexBuffer->Release();
-	//if( Model->SubsetArray )		delete[] Model->SubsetArray;
+	// GPUå´ã®é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ã‚’è§£æ”¾ã™ã‚‹ã€‚
+	if (model->VertexBuffer != nullptr)
+	{
+		model->VertexBuffer->Release();
+		model->VertexBuffer = nullptr;
+	}
 
-	delete[] Model->modelData->VertexArray;
-	delete[] Model->modelData->IndexArray;
-	delete[] Model->modelData->SubsetArray;
+	// GPUå´ã®ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ã‚’è§£æ”¾ã™ã‚‹ã€‚
+	if (model->IndexBuffer != nullptr)
+	{
+		model->IndexBuffer->Release();
+		model->IndexBuffer = nullptr;
+	}
+
+	if (model->modelData == nullptr)
+	{
+		return;
+	}
+
+	MODEL* data = model->modelData;
+
+	// å„ã‚µãƒ–ã‚»ãƒƒãƒˆãŒæ‰€æœ‰ã™ã‚‹ãƒ†ã‚¯ã‚¹ãƒãƒ£å‚ç…§ã‚’è§£æ”¾ã™ã‚‹ã€‚
+	if (data->SubsetArray != nullptr)
+	{
+		for (unsigned short i = 0; i < data->SubsetNum; ++i)
+		{
+			if (data->SubsetArray[i].Material.Texture != nullptr)
+			{
+				data->SubsetArray[i].Material.Texture->Release();
+			}
+		}
+	}
+
+	// CPUå´ã®å„é…åˆ—ã‚’è§£æ”¾ã™ã‚‹ã€‚
+	delete[] data->VertexArray;
+	delete[] data->IndexArray;
+	delete[] data->SubsetArray;
+
+	// é…åˆ—ã‚’ä¿æŒã—ã¦ã„ãŸMODELæœ¬ä½“ã‚‚è§£æ”¾ã™ã‚‹ã€‚
+	delete data;
+
+	// å†åº¦å‘¼ã³å‡ºã•ã‚Œã¦ã‚‚è§£æ”¾æ¸ˆã¿ãƒ‡ãƒ¼ã‚¿ã‚’å‚ç…§ã—ãªã„ã‚ˆã†ã«ã™ã‚‹ã€‚
+	model->modelData = nullptr;
 }
 
-
 //=============================================================================
-// •`‰æˆ—
+// æç”»å‡¦ç†
 //=============================================================================
 void DrawModel( DX11_MODEL *Model )
 {
 
-	// ’¸“_ƒoƒbƒtƒ@İ’è
+	// é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡è¨­å®š
 	UINT stride = sizeof( VERTEX_3D );
 	UINT offset = 0;
 	GetDeviceContext()->IASetVertexBuffers( 0, 1, &Model->VertexBuffer, &stride, &offset );
 
-	// ƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@İ’è
+	// ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡è¨­å®š
 	GetDeviceContext()->IASetIndexBuffer( Model->IndexBuffer, DXGI_FORMAT_R16_UINT, 0 );
 
-	// ƒvƒŠƒ~ƒeƒBƒuƒgƒ|ƒƒWİ’è
+	// ãƒ—ãƒªãƒŸãƒ†ã‚£ãƒ–ãƒˆãƒãƒ­ã‚¸è¨­å®š
 	GetDeviceContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
 	for( unsigned short i = 0; i < Model->modelData->SubsetNum; i++ )
 	{
-		// ƒ}ƒeƒŠƒAƒ‹İ’è
+		// ãƒãƒ†ãƒªã‚¢ãƒ«è¨­å®š
 		if (Model->modelData->SubsetArray[i].Material.Material.LoadMaterial)
 			SetMaterial( Model->modelData->SubsetArray[i].Material.Material );
 
-		// ƒeƒNƒXƒ`ƒƒİ’è
+		// ãƒ†ã‚¯ã‚¹ãƒãƒ£è¨­å®š
 		if (Model->modelData->SubsetArray[i].Material.Material.noTexSampling == 0)
 		{
 			GetDeviceContext()->PSSetShaderResources(0, 1, &Model->modelData->SubsetArray[i].Material.Texture);
 		}
 
-		// ƒ|ƒŠƒSƒ“•`‰æ
+		// ãƒãƒªã‚´ãƒ³æç”»
 		GetDeviceContext()->DrawIndexed( Model->modelData->SubsetArray[i].IndexNum, Model->modelData->SubsetArray[i].StartIndex, 0 );
 	}
 
@@ -166,552 +207,28 @@ void DrawModel( DX11_MODEL *Model )
 
 
 
-//ƒ‚ƒfƒ‹“Ç////////////////////////////////////////////
-void LoadObj( char *FileName, MODEL *Model )
-{
 
-	XMFLOAT3	*positionArray;
-	XMFLOAT3	*normalArray;
-	XMFLOAT2	*texcoordArray;
 
-	unsigned short	positionNum = 0;
-	unsigned short	normalNum = 0;
-	unsigned short	texcoordNum = 0;
-	unsigned short	vertexNum = 0;
-	unsigned short	indexNum = 0;
-	unsigned short	in = 0;
-	unsigned short	subsetNum = 0;
 
-	MODEL_MATERIAL	*materialArray = NULL;
-	unsigned short	materialNum = 0;
-
-	char str[256];
-	char *s;
-	char c;
-
-
-	FILE *file;
-	file = fopen( FileName, "rt" );
-	if( file == NULL )
-	{
-		printf( "ƒGƒ‰[:LoadModel %s \n", FileName );
-		return;
-	}
-
-
-
-	//—v‘f”ƒJƒEƒ“ƒg
-	while( TRUE )
-	{
-		fscanf( file, "%s", str );
-
-		if( feof( file ) != 0 )
-			break;
-
-		if( strcmp( str, "v" ) == 0 )
-		{
-			positionNum++;
-		}
-		else if( strcmp( str, "vn" ) == 0 )
-		{
-			normalNum++;
-		}
-		else if( strcmp( str, "vt" ) == 0 )
-		{
-			texcoordNum++;
-		}
-		else if( strcmp( str, "usemtl" ) == 0 )
-		{
-			subsetNum++;
-		}
-		else if( strcmp( str, "f" ) == 0 )
-		{
-			in = 0;
-
-			do
-			{
-				fscanf( file, "%s", str );
-				vertexNum++;
-				in++;
-				c = fgetc( file );
-			}
-			while( c != '\n' && c!= '\r' );
-
-			//lŠp‚ÍOŠp‚É•ªŠ„
-			if( in == 4 )
-				in = 6;
-
-			indexNum += in;
-		}
-	}
-
-
-	//ƒƒ‚ƒŠŠm•Û
-	positionArray = new XMFLOAT3[ positionNum ];
-	normalArray   = new XMFLOAT3[ normalNum ];
-	texcoordArray = new XMFLOAT2[ texcoordNum ];
-
-
-	Model->VertexArray = new VERTEX_3D[ vertexNum ];
-	Model->VertexNum = vertexNum;
-
-	Model->IndexArray = new unsigned short[ indexNum ];
-	Model->IndexNum = indexNum;
-
-	Model->SubsetArray = new SUBSET[ subsetNum ];
-	Model->SubsetNum = subsetNum;
-
-	
-
-
-	//—v‘f“Ç
-	XMFLOAT3 *position = positionArray;
-	XMFLOAT3 *normal = normalArray;
-	XMFLOAT2 *texcoord = texcoordArray;
-
-	unsigned short vc = 0;
-	unsigned short ic = 0;
-	unsigned short sc = 0;
-
-
-	fseek( file, 0, SEEK_SET );
-
-	while( TRUE )
-	{
-		fscanf( file, "%s", str );
-
-		if( feof( file ) != 0 )
-			break;
-
-		if( strcmp( str, "mtllib" ) == 0 )
-		{
-			//ƒ}ƒeƒŠƒAƒ‹ƒtƒ@ƒCƒ‹
-			fscanf( file, "%s", str );
-
-			char path[256];
-		//	strcpy( path, "data/model/" );
-
-			//----------------------------------- ƒtƒHƒ‹ƒ_[‘Î‰
-			strcpy(path, FileName);
-			char* adr = path;
-			char* ans = adr;
-			while (1)
-			{
-				adr = strstr(adr, "/");
-				if (adr == NULL) break;
-				else ans = adr;
-				adr++;
-			}
-			if (path != ans) ans++;
-			*ans = 0;
-			//-----------------------------------
-
-			strcat( path, str );
-
-			LoadMaterial( path, &materialArray, &materialNum );
-		}
-		else if( strcmp( str, "o" ) == 0 )
-		{
-			//ƒIƒuƒWƒFƒNƒg–¼
-			fscanf( file, "%s", str );
-		}
-		else if( strcmp( str, "v" ) == 0 )
-		{
-			//’¸“_À•W
-			fscanf( file, "%f", &position->x );
-			fscanf( file, "%f", &position->y );
-			fscanf( file, "%f", &position->z );
-			position->x *= SCALE_MODEL;
-			position->y *= SCALE_MODEL;
-			position->z *= SCALE_MODEL;
-			position++;
-		}
-		else if( strcmp( str, "vn" ) == 0 )
-		{
-			//–@ü
-			fscanf( file, "%f", &normal->x );
-			fscanf( file, "%f", &normal->y );
-			fscanf( file, "%f", &normal->z );
-			normal++;
-		}
-		else if( strcmp( str, "vt" ) == 0 )
-		{
-			//ƒeƒNƒXƒ`ƒƒÀ•W
-			fscanf( file, "%f", &texcoord->x );
-			fscanf( file, "%f", &texcoord->y );
-			texcoord->y = 1.0f - texcoord->y;
-			texcoord++;
-		}
-		else if( strcmp( str, "usemtl" ) == 0 )
-		{
-			//ƒ}ƒeƒŠƒAƒ‹
-			fscanf( file, "%s", str );
-
-			if( sc != 0 )
-				Model->SubsetArray[ sc - 1 ].IndexNum = ic - Model->SubsetArray[ sc - 1 ].StartIndex;
-
-			Model->SubsetArray[ sc ].StartIndex = ic;
-
-			for( unsigned short i = 0; i < materialNum; i++ )
-			{
-				if( strcmp( str, materialArray[i].Name ) == 0 )
-				{
-					Model->SubsetArray[ sc ].Material.Material = materialArray[i].Material;
-					Model->SubsetArray[sc].Material.Material.LoadMaterial = TRUE;
-					strcpy( Model->SubsetArray[ sc ].Material.TextureName, materialArray[i].TextureName );
-					strcpy( Model->SubsetArray[ sc ].Material.Name, materialArray[i].Name );
-
-					break;
-				}
-			}
-
-			sc++;
-			
-		}
-		else if( strcmp( str, "f" ) == 0 )
-		{
-			//–Ê
-			in = 0;
-
-			do
-			{
-				fscanf( file, "%s", str );
-
-				s = strtok( str, "/" );	
-				Model->VertexArray[vc].Position = positionArray[ atoi( s ) - 1 ];
-				if( s[ strlen( s ) + 1 ] != '/' )
-				{
-					//ƒeƒNƒXƒ`ƒƒÀ•W‚ª‘¶İ‚µ‚È‚¢ê‡‚à‚ ‚é
-					s = strtok( NULL, "/" );
-					Model->VertexArray[vc].TexCoord = texcoordArray[ atoi( s ) - 1 ];
-				}
-				s = strtok( NULL, "/" );	
-				Model->VertexArray[vc].Normal = normalArray[ atoi( s ) - 1 ];
-
-				Model->VertexArray[vc].Diffuse = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );
-
-				Model->IndexArray[ic] = vc;
-				ic++;
-				vc++;
-
-				in++;
-				c = fgetc( file );
-			}
-			while( c != '\n' && c != '\r' );
-
-			//lŠp‚ÍOŠp‚É•ªŠ„
-			if( in == 4 )
-			{
-				Model->IndexArray[ic] = vc - 4;
-				ic++;
-				Model->IndexArray[ic] = vc - 2;
-				ic++;
-			}
-		}
-	}
-
-
-	if( sc != 0 )
-		Model->SubsetArray[ sc - 1 ].IndexNum = ic - Model->SubsetArray[ sc - 1 ].StartIndex;
-
-
-
-
-
-	delete[] positionArray;
-	delete[] normalArray;
-	delete[] texcoordArray;
-	delete[] materialArray;
-
-	fclose(file);
-}
-
-
-
-
-//ƒ}ƒeƒŠƒAƒ‹“Ç‚İ‚İ///////////////////////////////////////////////////////////////////
-void LoadMaterial( char *FileName, MODEL_MATERIAL **MaterialArray, unsigned short *MaterialNum )
-{
-	char str[256];
-
-	FILE *file;
-	file = fopen( FileName, "rt" );
-	if( file == NULL )
-	{
-		printf( "ƒGƒ‰[:LoadMaterial %s \n", FileName );
-		return;
-	}
-
-	MODEL_MATERIAL *materialArray;
-	unsigned short materialNum = 0;
-
-	//—v‘f”ƒJƒEƒ“ƒg
-	while( TRUE )
-	{
-		fscanf( file, "%s", str );
-
-		if( feof( file ) != 0 )
-			break;
-
-
-		if( strcmp( str, "newmtl" ) == 0 )
-		{
-			materialNum++;
-		}
-	}
-
-
-	//ƒƒ‚ƒŠŠm•Û
-	materialArray = new MODEL_MATERIAL[ materialNum ];
-	ZeroMemory(materialArray, sizeof(MODEL_MATERIAL)*materialNum);
-
-
-	//—v‘f“Ç
-	int mc = -1;
-
-	fseek( file, 0, SEEK_SET );
-
-	while( TRUE )
-	{
-		fscanf( file, "%s", str );
-
-		if( feof( file ) != 0 )
-			break;
-
-
-		if( strcmp( str, "newmtl" ) == 0 )
-		{
-			//ƒ}ƒeƒŠƒAƒ‹–¼
-			mc++;
-			fscanf( file, "%s", materialArray[ mc ].Name );
-			strcpy( materialArray[ mc ].TextureName, "" );
-			materialArray[mc].Material.noTexSampling = 1;
-		}
-		else if( strcmp( str, "Ka" ) == 0 )
-		{
-			//ƒAƒ“ƒrƒGƒ“ƒg
-			fscanf( file, "%f", &materialArray[ mc ].Material.Ambient.x );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Ambient.y );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Ambient.z );
-			materialArray[ mc ].Material.Ambient.w = 1.0f;
-		}
-		else if( strcmp( str, "Kd" ) == 0 )
-		{
-			//ƒfƒBƒtƒ…[ƒY
-			fscanf( file, "%f", &materialArray[ mc ].Material.Diffuse.x );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Diffuse.y );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Diffuse.z );
-
-			// Maya‚ÅƒeƒNƒXƒ`ƒƒ‚ğ“\‚é‚Æ0.0f‚É‚È‚Á‚¿‚á‚¤‚İ‚½‚¢‚È‚Ì‚Å
-			if ((materialArray[mc].Material.Diffuse.x + materialArray[mc].Material.Diffuse.y + materialArray[mc].Material.Diffuse.z) == 0.0f)
-			{
-				materialArray[mc].Material.Diffuse.x = materialArray[mc].Material.Diffuse.y = materialArray[mc].Material.Diffuse.z = 1.0f;
-			}
-
-			materialArray[ mc ].Material.Diffuse.w = 1.0f;
-		}
-		else if( strcmp( str, "Ks" ) == 0 )
-		{
-			//ƒXƒyƒLƒ…ƒ‰
-			fscanf( file, "%f", &materialArray[ mc ].Material.Specular.x );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Specular.y );
-			fscanf( file, "%f", &materialArray[ mc ].Material.Specular.z );
-			materialArray[ mc ].Material.Specular.w = 1.0f;
-		}
-		else if( strcmp( str, "Ns" ) == 0 )
-		{
-			//ƒXƒyƒLƒ…ƒ‰‹­“x
-			fscanf( file, "%f", &materialArray[ mc ].Material.Shininess );
-		}
-		else if( strcmp( str, "d" ) == 0 )
-		{
-			//ƒAƒ‹ƒtƒ@
-			fscanf( file, "%f", &materialArray[ mc ].Material.Diffuse.w );
-		}
-		else if( strcmp( str, "map_Kd" ) == 0 )
-		{
-			//ƒeƒNƒXƒ`ƒƒ
-			fscanf( file, "%s", str );
-
-			char path[256];
-		//	strcpy( path, "data/model/" );
-
-			//----------------------------------- ƒtƒHƒ‹ƒ_[‘Î‰
-			strcpy(path, FileName);
-			char* adr = path;
-			char* ans = adr;
-			while (1)
-			{
-				adr = strstr(adr, "/");
-				if (adr == NULL) break;
-				else ans = adr;
-				adr++;
-			}
-			if (path != ans) ans++;
-			*ans = 0;
-			//-----------------------------------
-
-			strcat( path, str );
-
-			strcat( materialArray[ mc ].TextureName, path );
-			materialArray[mc].Material.noTexSampling = 0;
-		}
-	}
-
-
-	*MaterialArray = materialArray;
-	*MaterialNum = materialNum;
-
-	fclose(file);
-}
-
-
-// ƒ‚ƒfƒ‹‚Ì‘Sƒ}ƒeƒŠƒAƒ‹‚ÌƒfƒBƒtƒ…[ƒY‚ğæ“¾‚·‚éBMax16ŒÂ•ª‚É‚µ‚Ä‚ ‚é
+// ãƒ¢ãƒ‡ãƒ«ã®å…¨ãƒãƒ†ãƒªã‚¢ãƒ«ã®ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºã‚’å–å¾—ã™ã‚‹ã€‚Max16å€‹åˆ†ã«ã—ã¦ã‚ã‚‹
 void GetModelDiffuse(DX11_MODEL *Model, XMFLOAT4 *diffuse)
 {
 	int max = (Model->modelData->SubsetNum < MODEL_MAX_MATERIAL) ? Model->modelData->SubsetNum : MODEL_MAX_MATERIAL;
 
 	for (unsigned short i = 0; i < max; i++)
 	{
-		// ƒfƒBƒtƒ…[ƒYİ’è
+		// ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºè¨­å®š
 		diffuse[i] = Model->modelData->SubsetArray[i].Material.Material.Diffuse;
 	}
 }
 
 
-// ƒ‚ƒfƒ‹‚Ìw’èƒ}ƒeƒŠƒAƒ‹‚ÌƒfƒBƒtƒ…[ƒY‚ğƒZƒbƒg‚·‚éB
+// ãƒ¢ãƒ‡ãƒ«ã®æŒ‡å®šãƒãƒ†ãƒªã‚¢ãƒ«ã®ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºã‚’ã‚»ãƒƒãƒˆã™ã‚‹ã€‚
 void SetModelDiffuse(DX11_MODEL *Model, int mno, XMFLOAT4 diffuse)
 {
-	// ƒfƒBƒtƒ…[ƒYİ’è
+	// ãƒ‡ã‚£ãƒ•ãƒ¥ãƒ¼ã‚ºè¨­å®š
 	Model->modelData->SubsetArray[mno].Material.Material.Diffuse = diffuse;
 }
 
 
-void UpdateModel(DX11_MODEL* Model)
-{
-	UnloadModel(Model);
-
-	unsigned short vertexCnt = 0, indexCnt = 0, newSubsetCnt = 0, oldSubsetCnt = 0;
-	int newVertexArraySize = Model->newVertexArrays.getSize();
-	int oldVertexArraySize = Model->oldVertexArrays.getSize();
-	for (int i = 0; i < newVertexArraySize; i++)
-	{
-		SimpleArray<VERTEX_3D>* subsetVertex = Model->newVertexArrays[i];
-		int subsetVertexCnt = subsetVertex->getSize();
-		if (subsetVertexCnt != 0)
-		{
-			newSubsetCnt++;
-			vertexCnt += subsetVertexCnt;
-		}
-	}
-	for (int i = 0; i < oldVertexArraySize; i++)
-	{
-		SimpleArray<VERTEX_3D>* subsetVertex = Model->oldVertexArrays[i];
-		int subsetVertexCnt = subsetVertex->getSize();
-		if (subsetVertexCnt != 0)
-		{
-			oldSubsetCnt++;
-			vertexCnt += subsetVertexCnt;
-		}
-	}
-
-	Model->modelData->SubsetNum = newSubsetCnt + oldSubsetCnt;
-	Model->modelData->SubsetArray = new SUBSET[Model->modelData->SubsetNum];
-
-	Model->modelData->VertexNum = vertexCnt;
-	Model->modelData->IndexNum = vertexCnt;
-	Model->modelData->VertexArray = new VERTEX_3D[Model->modelData->VertexNum];
-	Model->modelData->IndexArray = new unsigned short[Model->modelData->IndexNum];
-
-	vertexCnt = 0;
-
-	for (int i = 0; i < newSubsetCnt; i++)
-	{
-		SUBSET subset;
-		SimpleArray<VERTEX_3D>* subsetVertex = Model->newVertexArrays[i];
-		int subsetVertexCnt = subsetVertex->getSize();
-		subset.StartIndex = indexCnt;
-		subset.IndexNum = subsetVertexCnt;
-		subset.Material = Model->newSubsetMaterial[i];
-		Model->modelData->SubsetArray[i] = subset;
-		for (int j = 0; j < subsetVertexCnt; j++)
-		{
-			Model->modelData->VertexArray[vertexCnt++] = (*subsetVertex)[j];
-			Model->modelData->IndexArray[indexCnt++] = indexCnt;
-		}
-
-		delete Model->newVertexArrays[i];
-	}
-
-	for (int i = 0; i < oldSubsetCnt; i++)
-	{
-		SUBSET subset;
-		SimpleArray<VERTEX_3D>* subsetVertex = Model->oldVertexArrays[i];
-		int subsetVertexCnt = subsetVertex->getSize();
-		subset.StartIndex = indexCnt;
-		subset.IndexNum = subsetVertexCnt;
-		subset.Material = Model->oldSubsetMaterial[i];
-		Model->modelData->SubsetArray[i + newSubsetCnt] = subset;
-		for (int j = 0; j < subsetVertexCnt; j++)
-		{
-			Model->modelData->VertexArray[vertexCnt++] = (*subsetVertex)[j];
-			Model->modelData->IndexArray[indexCnt++] = indexCnt;
-		}
-
-		delete Model->oldVertexArrays[i];
-	}
-
-	//Model->modelData->VertexNum = Model->newVertex.getSize();
-	//Model->modelData->IndexNum = Model->newIndex.getSize();
-	//Model->modelData->SubsetNum = Model->newSubsetArray.getSize();
-
-	//for (int i = 0; i < Model->modelData->VertexNum; i++)
-	//{
-	//	Model->modelData->VertexArray[i] = Model->newVertex[i];
-	//}
-
-	//for (int i = 0; i < Model->modelData->IndexNum; i++)
-	//{
-	//	Model->modelData->IndexArray[i] = Model->newIndex[i];
-	//}
-
-	//Model->modelData->SubsetArray[0].IndexNum = Model->modelData->IndexNum;
-
-	// ’¸“_ƒoƒbƒtƒ@¶¬
-	{
-		D3D11_BUFFER_DESC bd;
-		ZeroMemory(&bd, sizeof(bd));
-		bd.Usage = D3D11_USAGE_DEFAULT;
-		bd.ByteWidth = sizeof(VERTEX_3D) * Model->modelData->VertexNum;
-		bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-		bd.CPUAccessFlags = 0;
-
-		D3D11_SUBRESOURCE_DATA sd;
-		ZeroMemory(&sd, sizeof(sd));
-		sd.pSysMem = Model->modelData->VertexArray;
-
-		GetDevice()->CreateBuffer(&bd, &sd, &Model->VertexBuffer);
-	}
-
-
-	// ƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@¶¬
-	{
-		D3D11_BUFFER_DESC bd;
-		ZeroMemory(&bd, sizeof(bd));
-		bd.Usage = D3D11_USAGE_DEFAULT;
-		bd.ByteWidth = sizeof(unsigned short) * Model->modelData->IndexNum;
-		bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-		bd.CPUAccessFlags = 0;
-
-		D3D11_SUBRESOURCE_DATA sd;
-		ZeroMemory(&sd, sizeof(sd));
-		sd.pSysMem = Model->modelData->IndexArray;
-
-		GetDevice()->CreateBuffer(&bd, &sd, &Model->IndexBuffer);
-	}
-
-
-}
-
-
-
+#include "ModelUpdate.inl"

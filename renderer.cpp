@@ -470,7 +470,7 @@ HRESULT InitRenderer(HINSTANCE hInstance, HWND hWnd, BOOL bWindow)
 	D3D11_RASTERIZER_DESC rd; 
 	ZeroMemory( &rd, sizeof( rd ) );
 	rd.FillMode = D3D11_FILL_SOLID;
-	//rd.FillMode = D3D11_FILL_WIREFRAME;
+	rd.FillMode = D3D11_FILL_WIREFRAME;
 	rd.CullMode = D3D11_CULL_NONE; 
 	rd.DepthClipEnable = TRUE; 
 	rd.MultisampleEnable = FALSE; 

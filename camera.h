@@ -46,6 +46,8 @@ enum {
 // プロトタイプ宣言
 //*****************************************************************************
 void InitCamera(void);
+void ResetCamera(void);
+void UninitCamera(void);
 void UninitCamera(void);
 void UpdateCamera(void);
 void SetCamera(void);

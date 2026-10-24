@@ -1,6 +1,6 @@
-//=============================================================================
+Ôªø//=============================================================================
 //
-// ÉÇÉfÉãèàóù [player.cpp]
+// „É¢„Éá„É´Âá¶ÁêÜ [player.cpp]
 // Author : 
 //
 //=============================================================================
@@ -11,36 +11,45 @@
 #include "camera.h"
 #include "debugproc.h"
 #include "player.h"
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#include "MeshCutter.h"
+#include <memory>
+#include <limits>
 
 //*****************************************************************************
-// É}ÉNÉçíËã`
+// „Éû„ÇØ„É≠ÂÆöÁæ©
 //*****************************************************************************
-#define	MODEL_PLAYER		"data/MODEL/slime.obj"			// ì«Ç›çûÇﬁÉÇÉfÉãñº
+#define	MODEL_PLAYER		"data/MODEL/01_cube.obj"		// Ë™≠„ÅøËæº„ÇÄ„É¢„Éá„É´Âêç
 
-#define	VALUE_MOVE			(2.0f)							// à⁄ìÆó 
-#define	VALUE_ROTATE		(XM_PI * 0.02f)					// âÒì]ó 
+#define	VALUE_MOVE			(2.0f)							// ÁßªÂãïÈáè
+#define	VALUE_ROTATE		(XM_PI * 0.02f)					// ÂõûËª¢Èáè
 
-#define PLAYER_SHADOW_SIZE	(0.4f)							// âeÇÃëÂÇ´Ç≥
-#define PLAYER_OFFSET_Y		(7.0f)							// ÉvÉåÉCÉÑÅ[ÇÃë´å≥ÇÇ†ÇÌÇπÇÈ
-
-
-//*****************************************************************************
-// ÉvÉçÉgÉ^ÉCÉvêÈåæ
-//*****************************************************************************
+#define PLAYER_SHADOW_SIZE	(0.4f)							// ÂΩ±„ÅÆÂ§ß„Åç„Åï
+#define PLAYER_OFFSET_Y		(7.0f)							// „Éó„É¨„Ç§„É§„Éº„ÅÆË∂≥ÂÖÉ„Çí„ÅÇ„Çè„Åõ„Çã
 
 
 //*****************************************************************************
-// ÉOÉçÅ[ÉoÉãïœêî
+// „Éó„É≠„Éà„Çø„Ç§„ÉóÂÆ£Ë®Ä
 //*****************************************************************************
-static PLAYER				g_Player;						// ÉvÉåÉCÉÑÅ[
+
+
+//*****************************************************************************
+// „Ç∞„É≠„Éº„Éê„É´Â§âÊï∞
+//*****************************************************************************
+static PLAYER				g_Player;						// „Éó„É¨„Ç§„É§„Éº
 static BOOL isDragging = FALSE;
 static float startX = 0, startY = 0;
 static float currentX = 0, currentY = 0;
 static float endX = 0, endY = 0;
-static ID3D11Buffer* g_CuttingPlaneVertexBuffer = NULL;	// í∏ì_ÉoÉbÉtÉ@
+static ID3D11Buffer* g_CuttingPlaneVertexBuffer = NULL;	// È†ÇÁÇπ„Éê„ÉÉ„Éï„Ç°
 static Plane cuttingPlane;
 //=============================================================================
-// èâä˙âªèàóù
+// ÂàùÊúüÂåñÂá¶ÁêÜ
 //=============================================================================
 HRESULT InitPlayer(void)
 {
@@ -49,27 +58,23 @@ HRESULT InitPlayer(void)
 	LoadModel(MODEL_PLAYER, &g_Player.model);
 	g_Player.load = TRUE;
 
-	g_Player.pos = { 0.0f, PLAYER_OFFSET_Y, 0.0f };
-	g_Player.rot = { 0.0f, 0.0f, 0.0f };
-	g_Player.scl = { 1.0f, 1.0f, 1.0f };
-
-	g_Player.spd  = 0.0f;			// à⁄ìÆÉXÉsÅ[ÉhÉNÉäÉA
-	g_Player.size = PLAYER_SIZE;	// ìñÇΩÇËîªíËÇÃëÂÇ´Ç≥
-
-
-
-
-	g_Player.use = TRUE;
+    // Ëµ∑ÂãïÊôÇ„Å´„ÇÇ„ÄÅÂÆüË°å‰∏≠„ÅÆ„É™„Çª„ÉÉ„Éà„Å®Âêå„ÅòÂàùÊúüÁä∂ÊÖã„Çí‰ΩøÁî®„Åô„Çã„ÄÇ
+    ResetPlayerPresentation();
 
 	return S_OK;
 }
 
 //=============================================================================
-// èIóπèàóù
+// ÁµÇ‰∫ÜÂá¶ÁêÜ
 //=============================================================================
 void UninitPlayer(void)
 {
-	// ÉÇÉfÉãÇÃâï˙èàóù
+    if (g_CuttingPlaneVertexBuffer) {
+        g_CuttingPlaneVertexBuffer->Release();
+        g_CuttingPlaneVertexBuffer = nullptr;
+    }
+    isDragging = FALSE;
+	// „É¢„Éá„É´„ÅÆËß£ÊîæÂá¶ÁêÜ
 	if (g_Player.load)
 	{
 		UnloadModel(&g_Player.model);
@@ -79,52 +84,54 @@ void UninitPlayer(void)
 }
 
 //=============================================================================
-// çXêVèàóù
+// Êõ¥Êñ∞Âá¶ÁêÜ
 //=============================================================================
 void UpdatePlayer(void)
 {
 	CAMERA *cam = GetCamera();
 
-	// à⁄ìÆÇ≥ÇπÇøÇ·Ç§
+	// ÁßªÂãï„Åï„Åõ„Å°„ÇÉ„ÅÜ
 	if (GetKeyboardPress(DIK_LEFT))
-	{	// ç∂Ç÷à⁄ìÆ
+	{	// Â∑¶„Å∏ÁßªÂãï
 		g_Player.spd = VALUE_MOVE;
 		g_Player.dir = XM_PI / 2;
 	}
 	if (GetKeyboardPress(DIK_RIGHT))
-	{	// âEÇ÷à⁄ìÆ
+	{	// Âè≥„Å∏ÁßªÂãï
 		g_Player.spd = VALUE_MOVE;
 		g_Player.dir = -XM_PI / 2;
 	}
 	if (GetKeyboardPress(DIK_UP))
-	{	// è„Ç÷à⁄ìÆ
+	{	// ‰∏ä„Å∏ÁßªÂãï
 		g_Player.spd = VALUE_MOVE;
 		g_Player.dir = XM_PI;
 	}
 	if (GetKeyboardPress(DIK_DOWN))
-	{	// â∫Ç÷à⁄ìÆ
+	{	// ‰∏ã„Å∏ÁßªÂãï
 		g_Player.spd = VALUE_MOVE;
 		g_Player.dir = 0.0f;
 	}
 
 
 #ifdef _DEBUG
+    // R„Ç≠„Éº„Åß„Éó„É¨„Ç§„É§„Éº„ÅÆË°®Á§∫Áä∂ÊÖã„ÇíÂàùÊúüÁä∂ÊÖã„Å´Êàª„Åô„ÄÇ
 	if (GetKeyboardPress(DIK_R))
 	{
-		g_Player.pos.z = g_Player.pos.x = 0.0f;
-		g_Player.rot.y = g_Player.dir = 0.0f;
-		g_Player.spd = 0.0f;
+        ResetPlayerPresentation();
+
+        // Âêå„Åò„Éï„É¨„Éº„É†„ÅßÁßªÂãï„ÇÑÂàáÊñ≠Êìç‰Ωú„ÇíÂÜçÈñã„Åó„Å™„ÅÑ„Çà„ÅÜ„Å´„Åô„Çã„ÄÇ
+        return;
 	}
 #endif
 
 
-	//	// Keyì¸óÕÇ™Ç†Ç¡ÇΩÇÁà⁄ìÆèàóùÇ∑ÇÈ
+	//	// KeyÂÖ•Âäõ„Åå„ÅÇ„Å£„Åü„ÇâÁßªÂãïÂá¶ÁêÜ„Åô„Çã
 	if (g_Player.spd > 0.0f)
 	{
 		//g_Player.rot.y = g_Player.dir;
 		g_Player.rot.y = g_Player.dir + cam->rot.y;
 
-		// ì¸óÕÇÃÇ†Ç¡ÇΩï˚å¸Ç÷ÉvÉåÉCÉÑÅ[Çå¸Ç©ÇπÇƒà⁄ìÆÇ≥ÇπÇÈ
+		// ÂÖ•Âäõ„ÅÆ„ÅÇ„Å£„ÅüÊñπÂêë„Å∏„Éó„É¨„Ç§„É§„Éº„ÇíÂêë„Åã„Åõ„Å¶ÁßªÂãï„Åï„Åõ„Çã
 		g_Player.pos.x -= sinf(g_Player.rot.y) * g_Player.spd;
 		g_Player.pos.z -= cosf(g_Player.rot.y) * g_Player.spd;
 
@@ -135,8 +142,8 @@ void UpdatePlayer(void)
 	g_Player.spd *= 0.8f;
 
 
-#ifdef _DEBUG	// ÉfÉoÉbÉOèÓïÒÇï\é¶Ç∑ÇÈ
-	PrintDebugProc("Player:Å™ Å® Å´ Å©Å@Space\n");
+#ifdef _DEBUG	// „Éá„Éê„ÉÉ„Ç∞ÊÉÖÂ†±„ÇíË°®Á§∫„Åô„Çã
+	PrintDebugProc("Player:‚Üë ‚Üí ‚Üì ‚Üê„ÄÄSpace\n");
 	PrintDebugProc("Player:X:%f Y:%f Z:%f\n", g_Player.pos.x, g_Player.pos.y, g_Player.pos.z);
 #endif
 
@@ -144,37 +151,37 @@ void UpdatePlayer(void)
 }
 
 //=============================================================================
-// ï`âÊèàóù
+// ÊèèÁîªÂá¶ÁêÜ
 //=============================================================================
 void DrawPlayer(void)
 {
-	// ÉJÉäÉìÉOñ≥å¯
+	// „Ç´„É™„É≥„Ç∞ÁÑ°Âäπ
 	SetCullingMode(CULL_MODE_NONE);
 
 	XMMATRIX mtxScl, mtxRot, mtxTranslate, mtxWorld;
 
-	// ÉèÅ[ÉãÉhÉ}ÉgÉäÉbÉNÉXÇÃèâä˙âª
+	// „ÉØ„Éº„É´„Éâ„Éû„Éà„É™„ÉÉ„ÇØ„Çπ„ÅÆÂàùÊúüÂåñ
 	mtxWorld = XMMatrixIdentity();
 
-	// ÉXÉPÅ[ÉãÇîΩâf
+	// „Çπ„Ç±„Éº„É´„ÇíÂèçÊò†
 	mtxScl = XMMatrixScaling(g_Player.scl.x, g_Player.scl.y, g_Player.scl.z);
 	mtxWorld = XMMatrixMultiply(mtxWorld, mtxScl);
 
-	// âÒì]ÇîΩâf
+	// ÂõûËª¢„ÇíÂèçÊò†
 	mtxRot = XMMatrixRotationRollPitchYaw(g_Player.rot.x, g_Player.rot.y + XM_PI, g_Player.rot.z);
 	mtxWorld = XMMatrixMultiply(mtxWorld, mtxRot);
 
-	// à⁄ìÆÇîΩâf
+	// ÁßªÂãï„ÇíÂèçÊò†
 	mtxTranslate = XMMatrixTranslation(g_Player.pos.x, g_Player.pos.y, g_Player.pos.z);
 	mtxWorld = XMMatrixMultiply(mtxWorld, mtxTranslate);
 
-	// ÉèÅ[ÉãÉhÉ}ÉgÉäÉbÉNÉXÇÃê›íË
+	// „ÉØ„Éº„É´„Éâ„Éû„Éà„É™„ÉÉ„ÇØ„Çπ„ÅÆË®≠ÂÆö
 	SetWorldMatrix(&mtxWorld);
 
 	XMStoreFloat4x4(&g_Player.mtxWorld, mtxWorld);
 
 
-	// ÉÇÉfÉãï`âÊ
+	// „É¢„Éá„É´ÊèèÁîª
 	MATERIAL material;
 	ZeroMemory(&material, sizeof(material));
 	material.Diffuse = XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f);
@@ -185,551 +192,229 @@ void DrawPlayer(void)
 
 	//DrawCuttingPlane();
 
-	// ÉJÉäÉìÉOê›íËÇñﬂÇ∑
+	// „Ç´„É™„É≥„Ç∞Ë®≠ÂÆö„ÇíÊàª„Åô
 	SetCullingMode(CULL_MODE_BACK);
+}
+
+namespace {
+XMMATRIX PlayerWorldMatrix()
+{
+    return XMMatrixScaling(g_Player.scl.x, g_Player.scl.y, g_Player.scl.z)
+        * XMMatrixRotationRollPitchYaw(g_Player.rot.x, g_Player.rot.y + XM_PI, g_Player.rot.z)
+        * XMMatrixTranslation(g_Player.pos.x, g_Player.pos.y, g_Player.pos.z);
+}
+
+bool IsInsideStroke(meshcut::Vec3 point)
+{
+    CAMERA* camera = GetCamera();
+    XMVECTOR clip = XMVector4Transform(XMVectorSet(point.x, point.y, point.z, 1),
+        PlayerWorldMatrix() * XMLoadFloat4x4(&camera->mtxView)
+        * XMLoadFloat4x4(&camera->mtxProjection));
+    float w = XMVectorGetW(clip);
+    if (w <= 0.00001f) return false;
+    float x = (XMVectorGetX(clip) / w + 1) * 0.5f * SCREEN_WIDTH;
+    float y = (1 - XMVectorGetY(clip) / w) * 0.5f * SCREEN_HEIGHT;
+    // A pixel margin also permits perfectly horizontal/vertical strokes.
+    const float margin = 2.0f;
+    return x >= (std::min)(startX, endX) - margin
+        && x <= (std::max)(startX, endX) + margin
+        && y >= (std::min)(startY, endY) - margin
+        && y <= (std::max)(startY, endY) + margin;
+}
+
+struct PendingSubset {
+    std::unique_ptr<SimpleArray<VERTEX_3D>> negative, positive;
+    MODEL_MATERIAL material;
+};
+std::unique_ptr<SimpleArray<VERTEX_3D>> CopyVertices(const std::vector<VERTEX_3D>& vertices)
+{
+    std::unique_ptr<SimpleArray<VERTEX_3D>> array(new SimpleArray<VERTEX_3D>);
+    for (const auto& vertex : vertices) array->push_back(vertex);
+    return array;
+}
 }
 
 void CutMeshes(DX11_MODEL* model)
 {
-	SetLocalCuttingPlane();
-
-	unsigned short newStartIdx1 = 0, newStartIdx2 = 0;
-	BOOL updateModel = FALSE;
-	for (unsigned short i = 0; i < model->modelData->SubsetNum; i++)
-	{
-		unsigned short startIdx = model->modelData->SubsetArray[i].StartIndex;
-
-		unsigned short newIdxNum1 = 0, newIdxNum2 = 0;
-		SimpleArray<VERTEX_3D>* newVertexArray1 = new SimpleArray<VERTEX_3D>;
-		SimpleArray<VERTEX_3D>* newVertexArray2 = new SimpleArray<VERTEX_3D>;
-		SimpleArray<VERTEX_3D>* oldVertexArray = new SimpleArray<VERTEX_3D>;
-		SimpleArray<VERTEX_3D>* cuttingPointArray = new SimpleArray<VERTEX_3D>;
-		BOOL potentialCut = FALSE, subsetCut = FALSE;
-		HashTable* cutVertexMap = new HashTable(model->modelData->SubsetArray[i].IndexNum / 3 * 2);
-
-		for (unsigned short j = startIdx; j < startIdx + model->modelData->SubsetArray[i].IndexNum; j += 3)
-		{
-			VERTEX_3D v1 = model->modelData->VertexArray[j];
-			VERTEX_3D v2 = model->modelData->VertexArray[j + 1];
-			VERTEX_3D v3 = model->modelData->VertexArray[j + 2];
-
-			if (potentialCut == TRUE)
-			{
-				oldVertexArray->push_back(v1);
-				oldVertexArray->push_back(v2);
-				oldVertexArray->push_back(v3);
-				continue;
-			}
-
-			float d1 = XMVectorGetX(XMVector3Dot(
-				XMLoadFloat3(&XMFLOAT3(
-					v1.Position.x - cuttingPlane.localPoint.x,
-					v1.Position.y - cuttingPlane.localPoint.y,
-					v1.Position.z - cuttingPlane.localPoint.z)),
-				XMLoadFloat3(&cuttingPlane.localNormal)));
-
-			float d2 = XMVectorGetX(XMVector3Dot(
-				XMLoadFloat3(&XMFLOAT3(
-					v2.Position.x - cuttingPlane.localPoint.x,
-					v2.Position.y - cuttingPlane.localPoint.y,
-					v2.Position.z - cuttingPlane.localPoint.z)),
-				XMLoadFloat3(&cuttingPlane.localNormal)));
-
-			float d3 = XMVectorGetX(XMVector3Dot(
-				XMLoadFloat3(&XMFLOAT3(
-					v3.Position.x - cuttingPlane.localPoint.x,
-					v3.Position.y - cuttingPlane.localPoint.y,
-					v3.Position.z - cuttingPlane.localPoint.z)),
-				XMLoadFloat3(&cuttingPlane.localNormal)));
-
-			IntersectPoints intersectPoints[2];
-			int intersectCount = 0;
-
-			ProcessEdge(v1, v2, d1, d2, j, j + 1, intersectPoints, &intersectCount, potentialCut);
-			ProcessEdge(v1, v3, d1, d3, j, j + 2, intersectPoints, &intersectCount, potentialCut);
-			ProcessEdge(v2, v3, d2, d3, j + 1, j + 2, intersectPoints, &intersectCount, potentialCut);
-
-			if (potentialCut == TRUE)
-			{
-				oldVertexArray->push_back(v1);
-				oldVertexArray->push_back(v2);
-				oldVertexArray->push_back(v3);
-
-				if (newVertexArray1->getSize() != 0)
-					newVertexArray1->clear();
-				if (newVertexArray2->getSize() != 0)
-					newVertexArray2->clear();
-				subsetCut = FALSE;
-				continue;
-			}
-
-			if (intersectCount == 2)
-			{
-				if (cutVertexMap->search(intersectPoints[0].point1, intersectPoints[0].point2) == nullptr)
-				{
-					cuttingPointArray->push_back(intersectPoints[0].intersection);
-					cutVertexMap->insert(intersectPoints[0].point1, intersectPoints[0].point2);
-				}
-				if (cutVertexMap->search(intersectPoints[1].point1, intersectPoints[1].point2) == nullptr)
-				{
-					cuttingPointArray->push_back(intersectPoints[1].intersection);
-					cutVertexMap->insert(intersectPoints[1].point1, intersectPoints[1].point2);
-				}
-				subsetCut = TRUE;
-				if ((d1 > 0 && d2 < 0 && d3 < 0) || (d1 < 0 && d2 > 0 && d3 > 0))
-				{
-					// Vertex 1 is on one side, vertices 2 and 3 are on the other side
-					// Vertex 1 is alone
-					VERTEX_3D newPoint1, newPoint2;
-					int dir = 1;
-					if (d1 < 0)
-					{
-						dir *= -1;
-					}
-						
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v1.Position, XMLoadFloat3(&v1.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-
-					if (d1 < 0)
-					{
-						newVertexArray1->push_back(v1);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v1);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-
-
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v2.Position, XMLoadFloat3(&v2.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v3.Position, XMLoadFloat3(&v3.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-
-					if (d2 < 0) // d3 < 0
-					{
-						newVertexArray1->push_back(v2);
-						newVertexArray1->push_back(v3);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(v3);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v2);
-						newVertexArray2->push_back(v3);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(v3);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-
-				}
-				else if ((d2 > 0 && d1 < 0 && d3 < 0) || (d2 < 0 && d1 > 0 && d3 > 0))
-				{
-					VERTEX_3D newPoint1, newPoint2;
-					int dir = 1;
-					if (d2 < 0)
-						dir *= -1;
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v2.Position, XMLoadFloat3(&v2.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-
-					// Vertex 2 is alone
-					if (d2 < 0)
-					{
-						newVertexArray1->push_back(v2);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v2);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v1.Position, XMLoadFloat3(&v1.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v3.Position, XMLoadFloat3(&v3.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					
-					if (d1 < 0) // d3 < 0
-					{
-						newVertexArray1->push_back(v1);
-						newVertexArray1->push_back(v3);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(v3);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v1);
-						newVertexArray2->push_back(v3);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(v3);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-				}
-				else if ((d3 > 0 && d1 < 0 && d2 < 0) || (d3 < 0 && d1 > 0 && d2 > 0))
-				{
-					VERTEX_3D newPoint1, newPoint2;
-					int dir = 1;
-					if (d3 < 0)
-						dir *= -1;
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v3.Position, XMLoadFloat3(&v3.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					// Vertex 3 is alone
-					if (d3 < 0)
-					{
-						newVertexArray1->push_back(v3);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v3);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-
-					newPoint1 = intersectPoints[0].intersection;
-					newPoint2 = intersectPoints[1].intersection;
-					XMStoreFloat3(&newPoint1.Position, XMLoadFloat3(&intersectPoints[0].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&newPoint2.Position, XMLoadFloat3(&intersectPoints[1].intersection.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v1.Position, XMLoadFloat3(&v1.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					XMStoreFloat3(&v2.Position, XMLoadFloat3(&v2.Position) - 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-					
-					if (d1 < 0) // d2 < 0
-					{
-						newVertexArray1->push_back(v1);
-						newVertexArray1->push_back(v2);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(v2);
-						newVertexArray1->push_back(newPoint1);
-						newVertexArray1->push_back(newPoint2);
-					}
-					else
-					{
-						newVertexArray2->push_back(v1);
-						newVertexArray2->push_back(v2);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(v2);
-						newVertexArray2->push_back(newPoint1);
-						newVertexArray2->push_back(newPoint2);
-					}
-				}
-			}
-			else
-			{
-				int dir = 1;
-				if (d1 < 0)
-				{
-					dir *= -1;
-				}
-					
-				XMStoreFloat3(&v1.Position, XMLoadFloat3(&v1.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-				XMStoreFloat3(&v2.Position, XMLoadFloat3(&v2.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-				XMStoreFloat3(&v3.Position, XMLoadFloat3(&v3.Position) + 1.5f * dir * XMLoadFloat3(&cuttingPlane.localNormal));
-
-				if (d1 < 0) // d2 < 0, d3 < 0
-				{
-					newVertexArray1->push_back(v1);
-					newVertexArray1->push_back(v2);
-					newVertexArray1->push_back(v3);
-				}
-				else
-				{
-					newVertexArray2->push_back(v1);
-					newVertexArray2->push_back(v2);
-					newVertexArray2->push_back(v3);
-				}
-			}
-		}
-
-		delete cutVertexMap;
-
-		SimpleArray<VERTEX_3D>* newCuttingPlane = CheckAndCreateNewPlane(cuttingPointArray);
-		if (newCuttingPlane != nullptr)
-		{
-			int vertexCnt = newCuttingPlane->getSize();
-			for (int i = 0; i < vertexCnt; i++)
-			{
-				VERTEX_3D point = (*newCuttingPlane)[i];
-
-				XMStoreFloat3(&point.Position, XMLoadFloat3(&point.Position) - 1.5f * XMLoadFloat3(&cuttingPlane.localNormal));
-				newVertexArray1->push_back(point);
-
-				point = (*newCuttingPlane)[i];
-				XMStoreFloat3(&point.Position, XMLoadFloat3(&point.Position) + 1.5f * XMLoadFloat3(&cuttingPlane.localNormal));
-				newVertexArray2->push_back(point);
-			}
-		}
-
-		cuttingPointArray->clear();
-		delete cuttingPointArray;
-
-		MODEL_MATERIAL material = model->modelData->SubsetArray[i].Material;
-
-		if (subsetCut == TRUE)
-		{
-			updateModel = TRUE;
-			oldVertexArray->clear();
-			delete oldVertexArray;
-		}
-		else if (oldVertexArray->getSize() == 0)
-			delete oldVertexArray;
-		else
-		{
-			model->oldVertexArrays.push_back(oldVertexArray);
-			model->oldSubsetMaterial.push_back(material);
-		}
-			
-
-
-		if (newVertexArray1->getSize() == 0)
-			delete newVertexArray1;
-		else
-		{
-			model->newVertexArrays.push_back(newVertexArray1);
-			model->newSubsetMaterial.push_back(material);
-		}
-
-
-		if (newVertexArray2->getSize() == 0)
-			delete newVertexArray2;
-		else
-		{
-			model->newVertexArrays.push_back(newVertexArray2);
-			model->newSubsetMaterial.push_back(material);
-		}
-			
-
-	}
-
-	if (updateModel == TRUE)
-	{
-		UpdateModel(model);
-	}
-	else
-	{
-		int oldVertexCnt = model->oldVertexArrays.getSize();
-		for (int i = 0; i < oldVertexCnt; i++)
-			delete model->oldVertexArrays[i];
-	}
-	model->newVertexArrays.clear();
-	model->oldVertexArrays.clear();
-}
-
-SimpleArray<VERTEX_3D>* CheckAndCreateNewPlane(SimpleArray<VERTEX_3D>* cuttingPoints)
-{
-	if (cuttingPoints->getSize() <= 2) return nullptr;
-	
-	XMVECTOR p0 = XMLoadFloat3(&(*cuttingPoints)[0].Position);
-	XMVECTOR direction = XMVectorSubtract(XMLoadFloat3(&(*cuttingPoints)[1].Position), p0);
-	XMVECTOR vec;
-
-	for (int i = 2; i < cuttingPoints->getSize(); i++)
-	{
-		vec = XMVectorSubtract(XMLoadFloat3(&(*cuttingPoints)[i].Position), p0);
-		XMVECTOR crossProduct = XMVector3Cross(direction, vec);
-		if (!XMVector3Equal(crossProduct, XMVectorZero())) 
-		{
-			SimpleArray<VERTEX_3D>* newPlane = new SimpleArray<VERTEX_3D>;
-			CreateNewPlane(newPlane, cuttingPoints);
-			return newPlane;
-		}
-	}
-	return nullptr;
-}
-
-void CreateNewPlane(SimpleArray<VERTEX_3D>* newPlane, SimpleArray<VERTEX_3D>* cuttingPoints)
-{
-	VERTEX_3D center = (*cuttingPoints)[0];
-	SimpleArray<VertexWithAngle> verticesWithAngles;
-	int cuttingPointsNum = cuttingPoints->getSize();
-	for (int i = 1; i < cuttingPointsNum; i++)
-	{
-		XMFLOAT3 refVec;
-		XMVECTOR U, V;
-
-		// ñ@ê¸ÉxÉNÉgÉãÇ©ÇÁêÇíºÉxÉNÉgÉãÇåvéZ
-		if (cuttingPlane.localNormal.x == 0 && cuttingPlane.localNormal.y == 0)
-		{
-			refVec = XMFLOAT3(1, 0, 0);
-		}
-		else
-		{
-			refVec = XMFLOAT3(-cuttingPlane.localNormal.y, cuttingPlane.localNormal.x, 0);
-		}
-
-		// ÉçÅ[ÉJÉãç¿ïWånÇç\íz
-		U = XMVector3Normalize(XMVector3Cross(XMLoadFloat3(&cuttingPlane.localNormal), XMLoadFloat3(&refVec))); // U = N x R
-		V = XMVector3Normalize(XMVector3Cross(XMLoadFloat3(&cuttingPlane.localNormal), U));						// V = N x U
-
-		VERTEX_3D point = (*cuttingPoints)[i];
-
-		// í∏ì_ÇÃìäâeÇåvéZ
-		float pu = XMVectorGetX(XMVector3Dot(XMLoadFloat3(&point.Position), U));
-		float pv = XMVectorGetX(XMVector3Dot(XMLoadFloat3(&point.Position), V));
-		// äpìxÇåvéZ
-		float angle = atan2(pv, pu);
-
-		verticesWithAngles.push_back({point, angle});
-	}
-
-	InsertionSort(verticesWithAngles);
-
-	for (int i = 1; i < cuttingPointsNum - 1; i++)
-	{
-		newPlane->push_back(center);
-		newPlane->push_back((*cuttingPoints)[i]);
-		newPlane->push_back((*cuttingPoints)[i + 1]);
-	}
-}
-
-void InsertionSort(SimpleArray<VertexWithAngle>& vertices)
-{
-	for (int i = 1; i < vertices.getSize(); i++) 
-	{
-		VertexWithAngle key = vertices[i];
-		int j = i - 1;
-
-		while (j >= 0 && vertices[j].angle > key.angle) 
-		{
-			vertices[j + 1] = vertices[j];
-			j--;
-		}
-		vertices[j + 1] = key;
-	}
+    if (!model || !model->modelData || !model->modelData->SubsetArray) return;
+    SetLocalCuttingPlane();
+    meshcut::Plane plane{meshcut::Read(cuttingPlane.localPoint), meshcut::Read(cuttingPlane.localNormal)};
+    std::vector<PendingSubset> pending;
+    bool changed = false;
+    std::size_t totalVertices = 0, totalSubsets = 0;
+    for (std::size_t i = 0; i < model->modelData->SubsetNum; ++i) {
+        const auto& subset = model->modelData->SubsetArray[i];
+        std::size_t start = subset.StartIndex, count = subset.IndexNum;
+        const MODEL& source=*model->modelData;
+        if (!source.VertexArray || !source.IndexArray || start>source.IndexNum ||
+            count>source.IndexNum-start || count%3) return;
+        std::vector<VERTEX_3D> input;
+        input.reserve(count);
+        for (std::size_t j=0;j<count;++j) {
+            unsigned short index=source.IndexArray[start+j];
+            if (index>=source.VertexNum) return;
+            input.push_back(source.VertexArray[index]);
+        }
+        auto result = meshcut::Slice(input, plane, meshcut::Options{}, IsInsideStroke);
+        if (result.status != meshcut::Status::Cut && result.status != meshcut::Status::Unchanged) {
+            PrintDebugProc("Mesh cut rejected: subset %u, status %d\n", static_cast<unsigned>(i), static_cast<int>(result.status));
+            return; // Nothing has been published; preserve the entire original model.
+        }
+        PendingSubset staged;
+        staged.material = subset.Material;
+        if (result.status == meshcut::Status::Cut) {
+            changed = true;
+            totalVertices += result.negative.size() + result.positive.size();
+            totalSubsets += 2;
+            staged.negative = CopyVertices(result.negative);
+            staged.positive = CopyVertices(result.positive);
+        } else {
+            totalVertices += input.size(); ++totalSubsets;
+            staged.negative = CopyVertices(input);
+        }
+        pending.push_back(std::move(staged));
+    }
+    if (!changed) return;
+    // Conservative guard: existing model code uses 16-bit counts/start offsets.
+    const auto limit = (std::numeric_limits<unsigned short>::max)();
+    if (totalVertices > limit || totalSubsets > limit) {
+        PrintDebugProc("Mesh cut rejected: legacy 16-bit model capacity exceeded.\n");
+        return;
+    }
+    // TryUpdateModel consumes queued arrays on every result.
+    // Refuse to overwrite outstanding work owned by another operation.
+    if (model->newVertexArrays.getSize() || model->oldVertexArrays.getSize()) return;
+    model->newSubsetMaterial.clear();
+    model->oldSubsetMaterial.clear();
+    for (auto& subset : pending) {
+        model->newVertexArrays.push_back(subset.negative.release());
+        model->newSubsetMaterial.push_back(subset.material);
+        if (subset.positive) {
+            model->newVertexArrays.push_back(subset.positive.release());
+            model->newSubsetMaterial.push_back(subset.material);
+        }
+    }
+    HRESULT hr=TryUpdateModel(model);
+    if (FAILED(hr)) PrintDebugProc("Mesh cut model update failed: 0x%08X\n", static_cast<unsigned>(hr));
 }
 
 void SetLocalCuttingPlane(void)
 {
-	XMMATRIX mtxScl, mtxRot, mtxTranslate, mtxWorld;
-
-	// ÉèÅ[ÉãÉhÉ}ÉgÉäÉbÉNÉXÇÃèâä˙âª
-	mtxWorld = XMMatrixIdentity();
-
-	// ÉXÉPÅ[ÉãÇîΩâf
-	mtxScl = XMMatrixScaling(g_Player.scl.x, g_Player.scl.y, g_Player.scl.z);
-	mtxWorld = XMMatrixMultiply(mtxWorld, mtxScl);
-
-	// âÒì]ÇîΩâf
-	mtxRot = XMMatrixRotationRollPitchYaw(g_Player.rot.x, g_Player.rot.y + XM_PI, g_Player.rot.z);
-	mtxWorld = XMMatrixMultiply(mtxWorld, mtxRot);
-
-	// à⁄ìÆÇîΩâf
-	mtxTranslate = XMMatrixTranslation(g_Player.pos.x, g_Player.pos.y, g_Player.pos.z);
-	mtxWorld = XMMatrixMultiply(mtxWorld, mtxTranslate);
-
-	XMStoreFloat4x4(&g_Player.mtxWorld, mtxWorld);
-
-	XMMATRIX worldMatrix = XMLoadFloat4x4(&g_Player.mtxWorld);
-	XMMATRIX invWorldMatrix = XMMatrixInverse(nullptr, worldMatrix);
-
-	XMVECTOR planeNormal = XMVectorSet(cuttingPlane.normal.x, cuttingPlane.normal.y, cuttingPlane.normal.z, 0);
-	XMVECTOR planePoint = XMVectorSet(cuttingPlane.point.x, cuttingPlane.point.y, cuttingPlane.point.z, 1);
-
-	XMVECTOR localPlaneNormal = XMVector3Normalize(XMVector3TransformNormal(planeNormal, invWorldMatrix));
-	XMVECTOR localPlanePoint = XMVector3TransformCoord(planePoint, invWorldMatrix);
-
-	//if (cuttingPlane.localNormal.y < 0)
-	//	XMStoreFloat3(&cuttingPlane.localNormal, XMLoadFloat3(&cuttingPlane.localNormal) * -1);
-
-	XMStoreFloat3(&cuttingPlane.localNormal, localPlaneNormal);
-	XMStoreFloat3(&cuttingPlane.localPoint, localPlanePoint);
-	XMStoreFloat4x4(&cuttingPlane.localmtxWorld, worldMatrix);
-}
-
-void ProcessEdge(VERTEX_3D v1, VERTEX_3D v2, float d1, float d2, unsigned short idx1, unsigned short idx2,
-	IntersectPoints* intersectionPoint, int *count, BOOL& potentialCut)
-{
-
-	if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) 
-	{
-		float t = -d1 / (d2 - d1);
-		XMFLOAT3 intersection;
-		XMStoreFloat3(&intersection, XMLoadFloat3(&v1.Position) + t * (XMLoadFloat3(&XMFLOAT3(v2.Position.x - v1.Position.x, v2.Position.y - v1.Position.y, v2.Position.z - v1.Position.z))));
-
-		XMVECTOR localPoint = XMVectorSet(intersection.x, intersection.y, intersection.z, 1.0);
-		XMVECTOR worldPoint = XMVector3TransformCoord(localPoint, XMLoadFloat4x4(&cuttingPlane.localmtxWorld));
-
-		CAMERA* camera = GetCamera();
-		XMMATRIX viewMatrix = XMLoadFloat4x4(&camera->mtxView);
-		XMVECTOR viewPoint = XMVector3TransformCoord(worldPoint, viewMatrix);
-
-		XMMATRIX projectionMatrix = XMLoadFloat4x4(&camera->mtxProjection);
-		XMVECTOR clipPoint = XMVector3TransformCoord(viewPoint, projectionMatrix);
-
-		clipPoint /= XMVectorGetW(clipPoint);
-
-		float screenX = (XMVectorGetX(clipPoint) + 1.0f) * 0.5f * SCREEN_WIDTH;
-		float screenY = (1.0f - XMVectorGetY(clipPoint)) * 0.5f * SCREEN_HEIGHT;
-		if (screenX <= max(startX, endX)
-			&& screenX >= min(startX, endX)
-			&& screenY <= max(startY, endY)
-			&& screenY >= min(startY, endY))
-		{
-			if (*count < 2)
-			{
-				XMFLOAT3 vector = XMFLOAT3(v2.Position.x - v1.Position.x, v2.Position.y - v1.Position.y, v2.Position.z - v1.Position.z);
-				float distance = sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
-				XMFLOAT3 midVector = XMFLOAT3(intersection.x - v1.Position.x, intersection.y - v1.Position.y, intersection.z - v1.Position.z);
-				float midDistance = sqrt(midVector.x * midVector.x + midVector.y * midVector.y + midVector.z * midVector.z);
-				float t = midDistance / distance;
-				XMFLOAT3 normal;
-				XMFLOAT4 diffuse;
-				XMFLOAT2 texCoord;
-				normal.x = v1.Normal.x + (v2.Normal.x - v1.Normal.x) * t;
-				normal.y = v1.Normal.y + (v2.Normal.y - v1.Normal.y) * t;
-				normal.z = v1.Normal.z + (v2.Normal.z - v1.Normal.z) * t; 
-				diffuse.x = v1.Diffuse.x + (v2.Diffuse.x - v1.Diffuse.x) * t;
-				diffuse.y = v1.Diffuse.y + (v2.Diffuse.y - v1.Diffuse.y) * t;
-				diffuse.z = v1.Diffuse.z + (v2.Diffuse.z - v1.Diffuse.z) * t;
-				diffuse.w = v1.Diffuse.w + (v2.Diffuse.w - v1.Diffuse.w) * t;
-				texCoord.x = v1.TexCoord.x + (v2.TexCoord.x - v1.TexCoord.x) * t;
-				texCoord.y = v1.TexCoord.y + (v2.TexCoord.y - v1.TexCoord.y) * t;
-				intersectionPoint[*count].intersection = v1;
-				intersectionPoint[*count].intersection.Position = intersection;
-				intersectionPoint[*count].intersection.Normal = normal;
-				intersectionPoint[*count].intersection.Diffuse = diffuse;
-				intersectionPoint[*count].intersection.TexCoord = texCoord;
-				intersectionPoint[*count].intersection.TexCoord = texCoord;
-
-				intersectionPoint[*count].point1 = v1.Position;
-				intersectionPoint[*count].point2 = v2.Position;
-				(*count)++;
-			}
-		}
-		else
-		{
-			potentialCut = TRUE;
-		}
-
-	}
+    XMMATRIX world = PlayerWorldMatrix();
+    XMStoreFloat4x4(&g_Player.mtxWorld, world);
+    XMMATRIX inverse = XMMatrixInverse(nullptr, world);
+    XMVECTOR point = XMVector3TransformCoord(XMLoadFloat3(&cuttingPlane.point), inverse);
+    // World -> local plane normal uses world transpose (row-vector convention).
+    XMVECTOR normal = XMVector3Normalize(XMVector3TransformNormal(
+        XMLoadFloat3(&cuttingPlane.normal), XMMatrixTranspose(world)));
+    XMStoreFloat3(&cuttingPlane.localPoint, point);
+    XMStoreFloat3(&cuttingPlane.localNormal, normal);
+    XMStoreFloat4x4(&cuttingPlane.localmtxWorld, world);
 }
 
 //=============================================================================
-// ÉvÉåÉCÉÑÅ[èÓïÒÇéÊìæ
+// „Éó„É¨„Ç§„É§„Éº„ÅÆË°®Á§∫Áä∂ÊÖã„Å®ÂàáÊñ≠Êìç‰Ωú„ÇíÂàùÊúüÁä∂ÊÖã„Å´Êàª„Åô
+//=============================================================================
+void ResetPlayerPresentation(void)
+{
+    // „É¢„Éá„É´„ÅÆ‰ΩçÁΩÆ„ÄÅÂõûËª¢„ÄÅÊã°Â§ßÁéá„ÇíÂàùÊúüÁä∂ÊÖã„Å´Êàª„Åô„ÄÇ
+    g_Player.pos = { 0.0f, PLAYER_OFFSET_Y, 0.0f };
+    g_Player.rot = { 0.0f, 0.0f, 0.0f };
+    g_Player.scl = { 1.0f, 1.0f, 1.0f };
+
+    // ÁßªÂãï„ÅÆÊÖ£ÊÄß„Å®ÁßªÂãïÊñπÂêë„Çí„É™„Çª„ÉÉ„Éà„Åô„Çã„ÄÇ
+    g_Player.spd = 0.0f;
+    g_Player.dir = 0.0f;
+
+    // „Éó„É¨„Ç§„É§„Éº„ÅÆÂü∫Êú¨Áä∂ÊÖã„ÇíÂàùÊúüÂÄ§„Å´Êàª„Åô„ÄÇ
+    g_Player.size = PLAYER_SIZE;
+    g_Player.use = TRUE;
+
+    // „É¢„Éá„É´Â§âÊõ¥Ââç„ÅÆ„Éâ„É©„ÉÉ„Ç∞Êìç‰Ωú„ÇíÂºï„ÅçÁ∂ô„Åå„Å™„ÅÑ„Çà„ÅÜ„Å´„Åô„Çã„ÄÇ
+    isDragging = FALSE;
+
+    startX = 0.0f;
+    startY = 0.0f;
+
+    currentX = 0.0f;
+    currentY = 0.0f;
+
+    endX = 0.0f;
+    endY = 0.0f;
+
+    // ÂâçÂõû„ÅÆÂàáÊñ≠Âπ≥Èù¢„ÅÆÊÉÖÂ†±„Çí„ÇØ„É™„Ç¢„Åô„Çã„ÄÇ
+    cuttingPlane = {};
+
+    // ÊèèÁîªÂá¶ÁêÜ„Å®Âêå„ÅòÂàùÊúüÂßøÂã¢„Åß„ÉØ„Éº„É´„ÉâË°åÂàó„Çí‰ΩúÊàê„Åô„Çã„ÄÇ
+    const XMMATRIX world =
+        XMMatrixScaling(
+            g_Player.scl.x,
+            g_Player.scl.y,
+            g_Player.scl.z)
+        * XMMatrixRotationRollPitchYaw(
+            g_Player.rot.x,
+            g_Player.rot.y + XM_PI,
+            g_Player.rot.z)
+        * XMMatrixTranslation(
+            g_Player.pos.x,
+            g_Player.pos.y,
+            g_Player.pos.z);
+
+    XMStoreFloat4x4(&g_Player.mtxWorld, world);
+}
+
+//=============================================================================
+// „É¢„Éá„É´„ÇíË™≠„ÅøËæº„Åø„ÄÅÊàêÂäü„Åó„ÅüÂ†¥Âêà„Å†„ÅëÁèæÂú®„ÅÆ„É¢„Éá„É´„Å®ÁΩÆ„ÅçÊèõ„Åà„Çã
+//=============================================================================
+bool ReplacePlayerModel(const char* FileName)
+{
+    // ÁèæÂú®Ë°®Á§∫„Åó„Å¶„ÅÑ„Çã„É¢„Éá„É´„Å´„ÅØËß¶„Çå„Åö„ÄÅÂà•„ÅÆ„É¢„Éá„É´„Å∏Ë™≠„ÅøËæº„ÇÄ„ÄÇ
+    DX11_MODEL replacement;
+
+    if (!LoadModel(FileName, &replacement))
+    {
+        // Â§±Êïó„Åó„ÅüË™≠„ÅøËæº„ÅøÂÖà„ÇíÁ†¥Ê£Ñ„Åô„Çã„ÄÇ
+        // LoadModelÂÅ¥„ÅßËß£ÊîæÊ∏à„Åø„ÅÆÂ†¥Âêà„ÇÇ„ÄÅ„Éù„Ç§„É≥„Çø„ÅØÁ©∫„Å´„Å™„Å£„Å¶„ÅÑ„Çã„ÄÇ
+        UnloadModel(&replacement);
+
+        return false;
+    }
+
+    // Ë™≠„ÅøËæº„Åø„ÅåÂÆå‰∫Ü„Åó„Åü„É™„ÇΩ„Éº„Çπ„Å†„Åë„Çí‰∫§Êèõ„Åô„Çã„ÄÇ
+    // ‰∫§ÊèõÂæå„ÄÅreplacement„ÅØ‰ª•ÂâçË°®Á§∫„Åó„Å¶„ÅÑ„Åü„É¢„Éá„É´„Çí‰øùÊåÅ„Åô„Çã„ÄÇ
+    std::swap(g_Player.model.modelData, replacement.modelData);
+    std::swap(g_Player.model.VertexBuffer, replacement.VertexBuffer);
+    std::swap(g_Player.model.IndexBuffer, replacement.IndexBuffer);
+
+    // ‰∏çË¶Å„Å´„Å™„Å£„ÅüÊóß„É¢„Éá„É´„ÅÆ„É™„ÇΩ„Éº„Çπ„ÇíËß£Êîæ„Åô„Çã„ÄÇ
+    UnloadModel(&replacement);
+
+    delete replacement.modelData;
+    replacement.modelData = nullptr;
+
+    // Êñ∞„Åó„ÅÑ„É¢„Éá„É´„ÅåÊúâÂäπ„Å´„Å™„Å£„Å¶„Åã„ÇâË°®Á§∫Áä∂ÊÖã„Çí„É™„Çª„ÉÉ„Éà„Åô„Çã„ÄÇ
+    g_Player.load = TRUE;
+
+    ResetPlayerPresentation();
+    ResetCamera();
+
+    return true;
+}
+
+//=============================================================================
+// ÈÄ≤Ë°å‰∏≠„ÅÆÂàáÊñ≠Êìç‰Ωú„ÇíÂèñ„ÇäÊ∂à„Åô
+//=============================================================================
+void CancelPlayerCutGesture(void)
+{
+    isDragging = FALSE;
+
+    startX = startY = 0.0f;
+    currentX = currentY = 0.0f;
+    endX = endY = 0.0f;
+}
+
+//=============================================================================
+// „Éó„É¨„Ç§„É§„ÉºÊÉÖÂ†±„ÇíÂèñÂæó
 //=============================================================================
 PLAYER *GetPlayer(void)
 {
@@ -774,7 +459,7 @@ void UpdateMeshCut(void)
 
 void MakeCuttingPlaneVertex()
 {
-	// í∏ì_ÉoÉbÉtÉ@ê∂ê¨
+	// È†ÇÁÇπ„Éê„ÉÉ„Éï„Ç°ÁîüÊàê
 	D3D11_BUFFER_DESC bd;
 	ZeroMemory(&bd, sizeof(bd));
 	bd.Usage = D3D11_USAGE_DYNAMIC;
@@ -785,156 +470,53 @@ void MakeCuttingPlaneVertex()
 	GetDevice()->CreateBuffer(&bd, NULL, &g_CuttingPlaneVertexBuffer);
 }
 
-XMVECTOR CreateRayFromScreenPoint(float sx, float sy, const XMMATRIX& invVP) {
-	float vx = (2.0f * sx / SCREEN_WIDTH - 1.0f);
-	float vy = (1.0f - 2.0f * sy / SCREEN_HEIGHT);
-	XMVECTOR rayClip = XMVectorSet(vx, vy, 1.0f, 1.0f);
-	XMVECTOR rayWorld = XMVector3TransformCoord(rayClip, invVP);
-	return rayWorld;
-}
-
 void UpdateCuttingPlane()
 {
-	CAMERA* camera = GetCamera();
-	XMMATRIX P = XMLoadFloat4x4(&camera->mtxProjection);
+    float dx = endX - startX, dy = endY - startY;
+    if (dx * dx + dy * dy < 4.0f) return;
+    CAMERA* camera = GetCamera();
+    XMMATRIX projection = XMLoadFloat4x4(&camera->mtxProjection);
+    XMMATRIX inverseView = XMLoadFloat4x4(&camera->mtxInvView);
+    auto ray = [&](float x, float y) {
+        XMVECTOR direction = XMVectorSet(
+            (2*x/SCREEN_WIDTH-1) / XMVectorGetX(projection.r[0]),
+            (1-2*y/SCREEN_HEIGHT) / XMVectorGetY(projection.r[1]), 1, 0);
+        return XMVector3Normalize(XMVector3TransformNormal(direction, inverseView));
+    };
+    XMVECTOR first = ray(startX, startY), last = ray(endX, endY);
+    XMVECTOR normal = XMVector3Cross(last, first);
+    if (XMVectorGetX(XMVector3LengthSq(normal)) < 1e-12f) return;
+    XMVECTOR origin = XMVector3TransformCoord(XMVectorZero(), inverseView);
+    XMStoreFloat3(&cuttingPlane.point, origin);
+    XMStoreFloat3(&cuttingPlane.normal, XMVector3Normalize(normal));
+    CutMeshes(&g_Player.model);
 
-	// Compute picking ray in view space.
-	float vx = (+2.0f * startX / SCREEN_WIDTH - 1.0f) / P.r[0].m128_f32[0];
-	float vy = (-2.0f * startY / SCREEN_HEIGHT + 1.0f) / P.r[1].m128_f32[1];
-
-	// Ray definition in view space.
-	XMVECTOR rayOrigin = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-	XMVECTOR rayDirStart = XMVectorSet(vx, vy, 1.0f, 0.0f);
-
-	vx = (+2.0f * endX / SCREEN_WIDTH - 1.0f) / P.r[0].m128_f32[0];
-	vy = (-2.0f * endY / SCREEN_HEIGHT + 1.0f) / P.r[1].m128_f32[1];
-	XMVECTOR rayDirEnd = XMVectorSet(vx, vy, 1.0f, 0.0f);
-
-	// Tranform ray to local space of Mesh.
-	XMMATRIX V = XMLoadFloat4x4(&camera->mtxView);
-	XMMATRIX invView = XMLoadFloat4x4(&camera->mtxInvView);
-
-	//XMMATRIX W = XMLoadFloat4x4(&enemy->mtxWorld);
-	//XMMATRIX invWorld = XMMatrixInverse(&XMMatrixDeterminant(W), W);
-
-	//XMMATRIX toLocal = XMMatrixMultiply(invView, invWorld);
-
-	rayOrigin = XMVector3TransformCoord(rayOrigin, invView);
-	rayDirStart = XMVector3TransformNormal(rayDirStart, invView);
-	rayDirEnd = XMVector3TransformNormal(rayDirEnd, invView);
-
-	rayDirStart = XMVector3Normalize(rayDirStart);
-	rayDirEnd = XMVector3Normalize(rayDirEnd);
-
-	XMFLOAT3 start, end, origin;
-	XMStoreFloat3(&origin, rayOrigin);
-	XMStoreFloat3(&start, rayDirStart);
-	XMStoreFloat3(&end, rayDirEnd);
-	//PrintDebugProc("rayOrigin X: %f Y: %f Z: %f\n", origin.x, origin.y, origin.z);
-	//PrintDebugProc("rayStart X: %f Y: %f Z: %f\n", start.x, start.y, start.z);
-	//PrintDebugProc("rayEnd X: %f Y: %f Z: %f\n", end.x, end.y, end.z);
-
-	XMMATRIX invVP = XMMatrixInverse(nullptr, XMMatrixMultiply(V, P));
-	XMVECTOR ray1Origin = CreateRayFromScreenPoint(startX, startY, invVP);
-	XMVECTOR ray2Origin = CreateRayFromScreenPoint(endX, endY, invVP);
-
-	XMVECTOR commonDirection = XMVector3Normalize(XMVectorSubtract(ray1Origin, XMLoadFloat3(&camera->pos)));
-
-	float distance = 15.0f;
-	XMFLOAT3 point1, point2, point3, point4;
-	//XMStoreFloat3(&point1, ray1Origin);
-	//XMStoreFloat3(&point2, ray2Origin);
-	//XMVECTOR pointAlongRay = ray1Origin + distance * commonDirection;
-	//XMStoreFloat3(&point3, pointAlongRay);
-	//pointAlongRay = ray2Origin + distance * commonDirection;
-	//XMStoreFloat3(&point4, pointAlongRay);
-
-	XMVECTOR pointAlongRay = rayOrigin + distance * rayDirStart;
-	XMStoreFloat3(&point1, pointAlongRay);
-
-	pointAlongRay = rayOrigin + distance * 20 * rayDirStart;
-	XMStoreFloat3(&point2, pointAlongRay);
-
-	pointAlongRay = rayOrigin + distance * rayDirEnd;
-	XMStoreFloat3(&point3, pointAlongRay);
-
-	pointAlongRay = rayOrigin + distance * 20 * rayDirEnd;
-	XMStoreFloat3(&point4, pointAlongRay);
-
-	//// Calculate screen space vector
-	//float dx = endX - startX;
-	//float dy = endY - startY;
-
-	//// Calculate normal vector
-	//float nx = -dy;
-	//float ny = dx;
-
-	//// Normalize the normal vector
-	//float length = sqrt(nx * nx + ny * ny);
-	//nx /= length;
-	//ny /= length;
-
-	//// Convert to XMVECTOR
-	//XMVECTOR normalVecScreen = XMVectorSet(nx, ny, 0.0f, 0.0f);
-
-	//// Transform to world space using the inverse view matrix
-	//XMVECTOR normalVecWorld = XMVector3TransformNormal(normalVecScreen, invView);
-
-	//XMStoreFloat3(&cuttingPlane.normal, normalVecWorld);
-
-	//cuttingPlane.point = point1;
-	XMStoreFloat3(&cuttingPlane.point, rayOrigin);
-	XMVECTOR pointAcrossRay = XMVector3Normalize(XMLoadFloat3(&XMFLOAT3(point3.x - point1.x, point3.y - point1.y, point3.z - point1.z)));
-	XMFLOAT3 alongRay, acrossRay;
-	XMStoreFloat3(&alongRay, pointAlongRay - rayOrigin);
-	XMStoreFloat3(&acrossRay, pointAcrossRay);
-
-	XMStoreFloat3(&cuttingPlane.normal, XMVector3Normalize(XMVector3Cross(pointAlongRay - rayOrigin, pointAcrossRay)));
-
-
-
-	CutMeshes(&g_Player.model);
-
-	D3D11_MAPPED_SUBRESOURCE msr;
-	GetDeviceContext()->Map(g_CuttingPlaneVertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &msr);
-
-	VERTEX_3D* vertex = (VERTEX_3D*)msr.pData;
-
-	// í∏ì_ç¿ïWÇÃê›íË
-	vertex[0].Position = point1;
-	vertex[1].Position = point2;
-	vertex[2].Position = point3;
-	vertex[3].Position = point4;
-
-	// ñ@ê¸ÇÃê›íË
-	vertex[0].Normal = XMFLOAT3(0.0f, 0.0f, -1.0f);
-	vertex[1].Normal = XMFLOAT3(0.0f, 0.0f, -1.0f);
-	vertex[2].Normal = XMFLOAT3(0.0f, 0.0f, -1.0f);
-	vertex[3].Normal = XMFLOAT3(0.0f, 0.0f, -1.0f);
-
-	// ägéUåıÇÃê›íË
-	vertex[0].Diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-	vertex[1].Diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-	vertex[2].Diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-	vertex[3].Diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-
-	// ÉeÉNÉXÉ`ÉÉç¿ïWÇÃê›íË
-	vertex[0].TexCoord = XMFLOAT2(0.0f, 0.0f);
-	vertex[1].TexCoord = XMFLOAT2(1.0f, 0.0f);
-	vertex[2].TexCoord = XMFLOAT2(0.0f, 1.0f);
-	vertex[3].TexCoord = XMFLOAT2(1.0f, 1.0f);
-
-	GetDeviceContext()->Unmap(g_CuttingPlaneVertexBuffer, 0);
+    if (!g_CuttingPlaneVertexBuffer) return;
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(GetDeviceContext()->Map(g_CuttingPlaneVertexBuffer, 0,
+        D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    auto* vertices = static_cast<VERTEX_3D*>(mapped.pData);
+    const XMVECTOR positions[] = {origin+first*15.0f, origin+first*300.0f,
+                                 origin+last*15.0f, origin+last*300.0f};
+    for (int i=0; i<4; ++i) {
+        vertices[i] = {};
+        XMStoreFloat3(&vertices[i].Position, positions[i]);
+        vertices[i].Normal = cuttingPlane.normal;
+        vertices[i].Diffuse = XMFLOAT4(1,1,1,1);
+        vertices[i].TexCoord = XMFLOAT2(static_cast<float>(i%2), static_cast<float>(i/2));
+    }
+    GetDeviceContext()->Unmap(g_CuttingPlaneVertexBuffer, 0);
 }
 
 void DrawCuttingPlane()
 {
-	// í∏ì_ÉoÉbÉtÉ@ê›íË
+    if (!g_CuttingPlaneVertexBuffer) return;
+	// È†ÇÁÇπ„Éê„ÉÉ„Éï„Ç°Ë®≠ÂÆö
 	UINT stride = sizeof(VERTEX_3D);
 	UINT offset = 0;
 	GetDeviceContext()->IASetVertexBuffers(0, 1, &g_CuttingPlaneVertexBuffer, &stride, &offset);
 
-	// ÉvÉäÉ~ÉeÉBÉuÉgÉ|ÉçÉWê›íË
+	// „Éó„É™„Éü„ÉÜ„Ç£„Éñ„Éà„Éù„É≠„Ç∏Ë®≠ÂÆö
 	GetDeviceContext()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
 	MATERIAL material;
@@ -943,10 +525,10 @@ void DrawCuttingPlane()
 	material.noTexSampling = TRUE;
 	SetMaterial(material);
 
-	// ÉèÅ[ÉãÉhÉ}ÉgÉäÉbÉNÉXÇÃèâä˙âª
+	// „ÉØ„Éº„É´„Éâ„Éû„Éà„É™„ÉÉ„ÇØ„Çπ„ÅÆÂàùÊúüÂåñ
 	XMMATRIX mtxWorld = XMMatrixIdentity();
 
-	// ÉèÅ[ÉãÉhÉ}ÉgÉäÉbÉNÉXÇÃê›íË
+	// „ÉØ„Éº„É´„Éâ„Éû„Éà„É™„ÉÉ„ÇØ„Çπ„ÅÆË®≠ÂÆö
 	SetWorldMatrix(&mtxWorld);
 
 	GetDeviceContext()->Draw(4, 0);
