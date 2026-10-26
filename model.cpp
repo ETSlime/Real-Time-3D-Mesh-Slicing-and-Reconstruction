@@ -203,13 +203,6 @@ void DrawModel( DX11_MODEL *Model )
 
 }
 
-
-
-
-
-
-
-
 // モデルの全マテリアルのディフューズを取得する。Max16個分にしてある
 void GetModelDiffuse(DX11_MODEL *Model, XMFLOAT4 *diffuse)
 {
@@ -229,6 +222,3 @@ void SetModelDiffuse(DX11_MODEL *Model, int mno, XMFLOAT4 diffuse)
 	// ディフューズ設定
 	Model->modelData->SubsetArray[mno].Material.Material.Diffuse = diffuse;
 }
-
-
-#include "ModelUpdate.inl"

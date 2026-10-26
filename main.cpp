@@ -462,6 +462,25 @@ void Update(void)
 	// 入力の更新処理
 	UpdateInput();
 
+	// 押し続けている間ではなく、押した瞬間だけ切り替える。
+	static bool previousF1Pressed = false;
+
+	const bool f1Pressed = GetKeyboardPress(DIK_F1) != 0;
+
+	if (f1Pressed && !previousF1Pressed)
+	{
+		if (GetFillMode() == FILL_MODE_SOLID)
+		{
+			SetFillMode(FILL_MODE_WIREFRAME);
+		}
+		else
+		{
+			SetFillMode(FILL_MODE_SOLID);
+		}
+	}
+
+	previousF1Pressed = f1Pressed;
+
 	// ドロップされたOBJファイルの読み込み要求があれば処理する。
 	if (UpdatePendingObjLoad())
 	{

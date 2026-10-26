@@ -7,6 +7,11 @@
 #pragma once
 #include "SimpleArray.h"
 #include "model.h"
+#include "renderer.h"
+#include "MeshCutter.h"
+#include <memory>
+#include <limits>
+
 //*****************************************************************************
 // マクロ定義
 //*****************************************************************************
@@ -45,6 +50,37 @@ struct Plane
 	XMFLOAT3	localPoint;
 	XMFLOAT3	localNormal;
 	XMFLOAT4X4	localmtxWorld;
+};
+
+//=============================================================================
+// プレイヤーの切断操作と、モデル更新の受け渡しを補助する
+//=============================================================================
+class PlayerCutSupport
+{
+public:
+    PlayerCutSupport() = delete;
+
+    // 1つのサブセットについて、更新前に切断結果を一時保持する。
+    struct PendingSubset
+    {
+		// 切断した場合は負側、切断しなかった場合は元の頂点を保持する。
+        std::unique_ptr<SimpleArray<VERTEX_3D>> primaryVertices;
+
+		// 切断した場合だけ存在する、正側の頂点配列。
+        std::unique_ptr<SimpleArray<VERTEX_3D>> additionalVertices;
+
+        // 更新後のサブセットへ引き継ぐマテリアル。
+        MODEL_MATERIAL material;
+    };
+
+    // ローカル空間の交点が、画面上のドラッグ範囲内にあるか調べる。
+    static bool IsInsideStroke(MeshCutter::Vec3 point);
+
+    // 切断計算の頂点配列を、既存モデル更新用の配列へコピーする。
+	static std::unique_ptr<SimpleArray<VERTEX_3D>> CopyVertices(const std::vector<VERTEX_3D>& vertices);
+
+	// 更新用配列からモデルを再構築し、準備完了後に旧モデルと置き換える
+	static HRESULT TryUpdateModel(DX11_MODEL* model);
 };
 
 //*****************************************************************************

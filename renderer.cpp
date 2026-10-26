@@ -108,9 +108,12 @@ static ID3D11BlendState*		g_BlendStateSubtract;
 static BLEND_MODE				g_BlendStateParam;
 
 
-static ID3D11RasterizerState*	g_RasterStateCullOff;
-static ID3D11RasterizerState*	g_RasterStateCullCW;
-static ID3D11RasterizerState*	g_RasterStateCullCCW;
+// 塗りつぶし2種類とカリング3種類の組み合わせを保持する。
+static ID3D11RasterizerState* g_RasterStates[FILL_MODE_NUM][CULL_MODE_NUM] = {};
+
+// 現在選択されている状態。
+static FILL_MODE g_FillMode = FILL_MODE_SOLID;
+static CULL_MODE g_CullMode = CULL_MODE_BACK;
 
 
 static MATERIAL_CBUFFER	g_Material;
@@ -167,20 +170,68 @@ void SetBlendState(BLEND_MODE bm)
 	}
 }
 
-void SetCullingMode(CULL_MODE cm)
+//=============================================================================
+// 現在の塗りつぶしとカリングの組み合わせを適用する
+//=============================================================================
+void ApplyRasterizerState(void)
 {
-	switch (cm)
+	g_ImmediateContext->RSSetState(g_RasterStates[g_FillMode][g_CullMode]);
+}
+
+//=============================================================================
+// 作成したラスタライザステートを解放する
+//=============================================================================
+void ReleaseRasterizerStates(void)
+{
+	for (int fillIndex = 0; fillIndex < FILL_MODE_NUM; ++fillIndex)
 	{
-	case CULL_MODE_NONE:
-		g_ImmediateContext->RSSetState(g_RasterStateCullOff);
-		break;
-	case CULL_MODE_FRONT:
-		g_ImmediateContext->RSSetState(g_RasterStateCullCW);
-		break;
-	case CULL_MODE_BACK:
-		g_ImmediateContext->RSSetState(g_RasterStateCullCCW);
-		break;
+		for (int cullIndex = 0; cullIndex < CULL_MODE_NUM; ++cullIndex)
+		{
+			ID3D11RasterizerState*& state = g_RasterStates[fillIndex][cullIndex];
+
+			if (state != nullptr)
+			{
+				state->Release();
+				state = nullptr;
+			}
+		}
 	}
+}
+
+//=============================================================================
+// 塗りつぶし方法を維持し、カリング方法だけを変更する
+//=============================================================================
+void SetCullingMode(CULL_MODE mode)
+{
+	if (mode < CULL_MODE_NONE || mode >= CULL_MODE_NUM)
+	{
+		return;
+	}
+
+	g_CullMode = mode;
+	ApplyRasterizerState();
+}
+
+//=============================================================================
+// カリング方法を維持し、塗りつぶし方法だけを変更する
+//=============================================================================
+void SetFillMode(FILL_MODE mode)
+{
+	if (mode < FILL_MODE_SOLID || mode >= FILL_MODE_NUM)
+	{
+		return;
+	}
+
+	g_FillMode = mode;
+	ApplyRasterizerState();
+}
+
+//=============================================================================
+// 現在の塗りつぶし方法を取得する
+//=============================================================================
+FILL_MODE GetFillMode(void)
+{
+	return g_FillMode;
 }
 
 void SetAlphaTestEnable(BOOL flag)
@@ -466,21 +517,53 @@ HRESULT InitRenderer(HINSTANCE hInstance, HWND hWnd, BOOL bWindow)
 
 
 
-	// ラスタライザステート作成
-	D3D11_RASTERIZER_DESC rd; 
-	ZeroMemory( &rd, sizeof( rd ) );
-	rd.FillMode = D3D11_FILL_SOLID;
-	rd.FillMode = D3D11_FILL_WIREFRAME;
-	rd.CullMode = D3D11_CULL_NONE; 
-	rd.DepthClipEnable = TRUE; 
-	rd.MultisampleEnable = FALSE; 
-	g_D3DDevice->CreateRasterizerState( &rd, &g_RasterStateCullOff);
+	// 塗りつぶし方法とカリング方法の組み合わせを事前に作成する。
+	const D3D11_FILL_MODE fillModes[FILL_MODE_NUM] =
+	{
+		D3D11_FILL_SOLID,
+		D3D11_FILL_WIREFRAME
+	};
 
-	rd.CullMode = D3D11_CULL_FRONT;
-	g_D3DDevice->CreateRasterizerState(&rd, &g_RasterStateCullCW);
+	const D3D11_CULL_MODE cullModes[CULL_MODE_NUM] =
+	{
+		D3D11_CULL_NONE,
+		D3D11_CULL_FRONT,
+		D3D11_CULL_BACK
+	};
 
-	rd.CullMode = D3D11_CULL_BACK;
-	g_D3DDevice->CreateRasterizerState(&rd, &g_RasterStateCullCCW);
+	D3D11_RASTERIZER_DESC description = {};
+
+	// 既存のラスタライザ設定を維持する。
+	description.DepthClipEnable = TRUE;
+	description.MultisampleEnable = FALSE;
+
+	for (int fillIndex = 0; fillIndex < FILL_MODE_NUM; ++fillIndex)
+	{
+		description.FillMode = fillModes[fillIndex];
+
+		for (int cullIndex = 0; cullIndex < CULL_MODE_NUM; ++cullIndex)
+		{
+			description.CullMode = cullModes[cullIndex];
+
+			const HRESULT result = g_D3DDevice->CreateRasterizerState(
+					&description,
+					&g_RasterStates[fillIndex][cullIndex]);
+
+			if (FAILED(result))
+			{
+				// この処理で作成済みのステートを解放する。
+				ReleaseRasterizerStates();
+
+				return result;
+			}
+		}
+	}
+
+	// 起動時は塗りつぶし表示と背面カリングを使用する。
+	g_FillMode = FILL_MODE_SOLID;
+	g_CullMode = CULL_MODE_BACK;
+
+	ApplyRasterizerState();
 
 	// カリングモード設定（CCW）
 	SetCullingMode(CULL_MODE_BACK);
@@ -717,9 +800,9 @@ void UninitRenderer(void)
 	if (g_BlendStateAlphaBlend)	g_BlendStateAlphaBlend->Release();
 	if (g_BlendStateAdd)		g_BlendStateAdd->Release();
 	if (g_BlendStateSubtract)	g_BlendStateSubtract->Release();
-	if (g_RasterStateCullOff)	g_RasterStateCullOff->Release();
-	if (g_RasterStateCullCW)	g_RasterStateCullCW->Release();
-	if (g_RasterStateCullCCW)	g_RasterStateCullCCW->Release();
+
+	// 塗りつぶしとカリングの全組み合わせを解放する。
+	ReleaseRasterizerStates();
 
 	if (g_WorldBuffer)			g_WorldBuffer->Release();
 	if (g_ViewBuffer)			g_ViewBuffer->Release();

@@ -40,6 +40,14 @@ enum CULL_MODE
 	CULL_MODE_NUM
 };
 
+// ポリゴンの塗りつぶし方法。
+enum FILL_MODE
+{
+	FILL_MODE_SOLID,
+	FILL_MODE_WIREFRAME,
+
+	FILL_MODE_NUM
+};
 
 //*********************************************************
 // 構造体
@@ -122,3 +130,10 @@ void SetShaderCamera(XMFLOAT3 pos);
 
 void SetClearColor(float* color4);
 
+// カリング設定を維持したまま、塗りつぶし方法を変更する。
+void SetFillMode(FILL_MODE mode);
+
+// 現在選択されている塗りつぶし方法を取得する。
+FILL_MODE GetFillMode(void);
+
+void ApplyRasterizerState(void);
