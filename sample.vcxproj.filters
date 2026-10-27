@@ -42,9 +42,6 @@
     <ClInclude Include="enemy.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
-    <ClInclude Include="SimpleArray.h">
-      <Filter>ヘッダー ファイル</Filter>
-    </ClInclude>
     <ClInclude Include="ObjImporter.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -55,6 +52,9 @@
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="ModelHistory.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="SimpleArray.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
   </ItemGroup>
@@ -97,9 +97,6 @@
     </ClCompile>
     <ClCompile Include="ModelHistory.cpp">
       <Filter>ソース ファイル</Filter>
-    </ClCompile>
-    <ClCompile Include="HashTable.h">
-      <Filter>ヘッダー ファイル</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

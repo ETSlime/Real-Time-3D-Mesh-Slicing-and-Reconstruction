@@ -157,7 +157,6 @@
     <ClCompile Include="debugproc.cpp" />
     <ClCompile Include="enemy.cpp" />
     <ClCompile Include="field.cpp" />
-    <ClCompile Include="HashTable.h" />
     <ClCompile Include="input.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MeshCutter.cpp" />

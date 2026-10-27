@@ -94,6 +94,34 @@ public:
         std::vector<VertexType> positive;
     };
 
+    // 元サブセットの表面を、平面の両側へ切り分けた結果。
+    // 封口用の三角形は含めない。
+    template<class VertexType>
+    struct SurfaceResult
+    {
+        // 平面法線の反対側に残る原表面。
+        std::vector<VertexType> negative;
+
+        // 平面法線が向く側に残る原表面。
+        std::vector<VertexType> positive;
+    };
+
+    // 全サブセットをまとめて処理した、モデル全体の切断結果。
+    template<class VertexType>
+    struct ModelResult
+    {
+        // 切断の成否は、モデル全体について判定する。
+        Status status = Status::Unchanged;
+
+        // 元サブセットごとの原表面を保持する。
+        // 入力と同じ順序・要素数を維持し、材質の対応付けに使用する。
+        std::vector<SurfaceResult<VertexType>> subsets;
+
+        // 全サブセットの交線から生成した、両側の封口。
+        // 元表面とは分離し、呼び出し元で封口用の材質を設定する。
+        SurfaceResult<VertexType> caps;
+    };
+
     // ------------------------------------------------------------------------
     // 表示と切断操作で使用する座標変換
     // ------------------------------------------------------------------------
@@ -129,6 +157,16 @@ public:
     template<class V>
     static Result<V> Slice(const std::vector<V>& input, Plane plane);
 
+    // 全サブセットの三角形を、同じ平面でまとめて切断する。
+    // 原表面はサブセット別に保持し、封口はモデル全体で生成する。
+    // 各サブセットの入力は、3頂点ごとに1つの三角形を表す。
+    template<class VertexType, class Accept>
+    static ModelResult<VertexType> SliceModel(
+        const std::vector<std::vector<VertexType>>& inputSubsets,
+        Plane plane,
+        Options options,
+        Accept accept);
+
 private:
     // ------------------------------------------------------------------------
     // 内部計算用の型
@@ -148,6 +186,26 @@ private:
         std::size_t indexA;
         std::size_t indexB;
         std::size_t indexC;
+    };
+
+    // 1回のモデル切断で、全サブセットが共有する作業データ。
+    // サブセットを切り替えても、この内容は初期化しない。
+    template<class VertexType>
+    struct CutContext
+    {
+        // 全サブセットから収集した、封口輪郭用の交点。
+        // 配列の添字を共通ノード番号として使用する。
+        std::vector<VertexType> nodes;
+
+        // 共通ノード間の接続関係。
+        // nodesと同じ数の要素を持つ。
+        std::vector<std::vector<std::size_t>> adjacency;
+
+        // モデル全体に、平面の正側の頂点が存在するか。
+        bool hasPositive = false;
+
+        // モデル全体に、平面の負側の頂点が存在するか。
+        bool hasNegative = false;
     };
 
     // ------------------------------------------------------------------------
@@ -191,6 +249,20 @@ private:
     template<class VertexType>
     static void Clip(const VertexType* triangle, const float* distances,
         float side, float epsilon, std::vector<VertexType>& output);
+
+    // 1つのサブセットについて、原表面を切り分けて交線を収集する。
+    // plane.normalは、呼び出し前に単位長へ正規化しておく。
+    // contextは全サブセットで共有し、この関数では初期化しない。
+    // falseの場合、failureStatusに中断理由を設定する。
+    template<class VertexType, class Accept>
+    static bool ClipSubset(
+        const std::vector<VertexType>& input,
+        const Plane& plane,
+        float epsilon,
+        Accept& accept,
+        SurfaceResult<VertexType>& surface,
+        CutContext<VertexType>& context,
+        Status& failureStatus);
 
     // ------------------------------------------------------------------------
     // 交点の統合と閉じた輪郭の構築
@@ -267,6 +339,14 @@ private:
         const std::vector<TriangleIndices>& capTriangles,
         const Plane& plane,
         const Options& options);
+
+    // 両側の頂点を、平面法線に沿って反対方向へ移動する。
+    // 原表面と封口に、同じ移動量を適用する。
+    template<class VertexType>
+    static void ApplySeparation(
+        SurfaceResult<VertexType>& surface,
+        const Plane& plane,
+        float separation);
 };
 
 // テンプレートの定義を、利用側の翻訳単位から参照可能にする。

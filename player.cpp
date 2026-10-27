@@ -246,114 +246,152 @@ void CutMeshes(DX11_MODEL* model)
         MeshCutter::Read(g_CuttingPlane.localNormal)
     };
 
-    // この配列へ保存している間は、元のモデルを変更しない。
-    std::vector<PlayerCutSupport::PendingSubset> pending;
-
-    bool hasChanges = false;
-    std::size_t totalVertexCount = 0;
-    std::size_t totalSubsetCount = 0;
-
     // ------------------------------------------------------------------------
-    // 2. 各サブセットの三角形を読み取り、切断結果を一時保存する
+    // 2. 全サブセットの入力を準備する
     // ------------------------------------------------------------------------
     const MODEL& source = *model->modelData;
+
+    if (source.VertexArray == nullptr
+        || source.IndexArray == nullptr
+        || source.SubsetNum == 0)
+        return;
+
+    // 外側の添字は、元モデルのサブセット番号と一致させる。
+    std::vector<std::vector<VERTEX_3D>> inputSubsets;
+    inputSubsets.resize(source.SubsetNum);
+
+    // 封口には、最初の空でないサブセットの材質を使用する。
+    // SubsetNumは、有効なサブセット番号と重ならない初期値。
+    std::size_t capMaterialIndex = source.SubsetNum;
+
     for (std::size_t subsetIndex = 0; subsetIndex < source.SubsetNum; ++subsetIndex)
     {
         const SUBSET& subset = source.SubsetArray[subsetIndex];
+
         const std::size_t startIndex = subset.StartIndex;
         const std::size_t indexCount = subset.IndexNum;
-
-        // 頂点配列とインデックス配列が必要。
-        if (source.VertexArray == nullptr 
-            || source.IndexArray == nullptr)
-			return;
 
         // 減算前に開始位置を確認し、範囲外参照を防ぐ。
         if (startIndex > source.IndexNum
             || indexCount > source.IndexNum - startIndex)
-			return;
+            return;
 
         // 3インデックスごとに1つの三角形を構成する。
         if (indexCount % 3 != 0)
-			return;
+            return;
 
-        // インデックス参照を解決し、展開した三角形頂点を作成する。
-        std::vector<VERTEX_3D> input;
+        // 空のサブセットは番号だけ維持し、頂点を追加しない。
+        if (indexCount == 0)
+            continue;
+
+        if (capMaterialIndex == source.SubsetNum)
+            capMaterialIndex = subsetIndex;
+
+        std::vector<VERTEX_3D>& input = inputSubsets[subsetIndex];
         input.reserve(indexCount);
 
+        // インデックスを解決し、展開した三角形頂点を保存する。
         for (std::size_t offset = 0; offset < indexCount; ++offset)
         {
             const unsigned short vertexIndex = source.IndexArray[startIndex + offset];
-            
-            // 範囲外参照を防ぐ。
+
             if (vertexIndex >= source.VertexNum)
-				return;
+                return;
 
             input.push_back(source.VertexArray[vertexIndex]);
         }
+    }
 
-        // 原表面の切り分けと封口を、CPU側で計算する。
-        const auto result = MeshCutter::Slice(
-            input,
-            plane,
-            MeshCutter::Options{},
-            PlayerCutSupport::IsInsideStroke);
+    // 三角形を持つサブセットがなければ、処理を行わない。
+    if (capMaterialIndex == source.SubsetNum)
+        return;
 
-        const bool wasCut = result.status == MeshCutter::Status::Cut;
-        const bool wasUnchanged = result.status == MeshCutter::Status::Unchanged;
+    // ------------------------------------------------------------------------
+    // 3. モデル全体を一度に切断する
+    // ------------------------------------------------------------------------
+    const auto result = MeshCutter::SliceModel(
+        inputSubsets,
+        plane,
+        MeshCutter::Options{},
+        PlayerCutSupport::IsInsideStroke);
 
-        // いずれかのサブセットで計算に失敗した場合は、
-        // それまでの一時結果も採用せず、元のモデルを維持する。
-        if (!wasCut && !wasUnchanged)
-        {
-            PrintDebugProc(
-                "Mesh cut rejected: subset %u, status %d\n",
-                static_cast<unsigned>(subsetIndex),
-                static_cast<int>(result.status));
+    // 未変更の場合は、元モデルと編集履歴を維持する。
+    if (result.status == MeshCutter::Status::Unchanged)
+        return;
 
-            return;
-        }
+    // 一部のサブセットだけを採用せず、モデル全体の結果で判断する。
+    if (result.status != MeshCutter::Status::Cut)
+    {
+        PrintDebugProc(
+            "モデル全体の切断に失敗しました: status %d\n",
+            static_cast<int>(result.status));
+
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    // 4. 原表面と封口を、材質付きの一時結果へ変換する
+    // ------------------------------------------------------------------------
+    std::vector<PlayerCutSupport::PendingSubset> pending;
+
+    std::size_t totalVertexCount = 0;
+    std::size_t totalSubsetCount = 0;
+
+    // 原サブセットを順に処理し、最後の1回で封口を処理する。
+    for (std::size_t outputIndex = 0; outputIndex <= result.subsets.size(); ++outputIndex)
+    {
+        const bool isCap = outputIndex == result.subsets.size();
+
+        // 封口と原表面は、同じ形式の両側頂点配列を持つ。
+        const MeshCutter::SurfaceResult<VERTEX_3D>& surface =
+            isCap
+            ? result.caps
+            : result.subsets[outputIndex];
+
+        const bool hasNegative = !surface.negative.empty();
+        const bool hasPositive = !surface.positive.empty();
+
+        // 両側とも空なら、描画用サブセットを作成しない。
+        if (!hasNegative && !hasPositive)
+            continue;
 
         PlayerCutSupport::PendingSubset staged;
 
-        // 切断後も、元サブセットのマテリアルを使用する。
-        staged.material = subset.Material;
+        // 原表面は元の材質、封口は選択した材質を使用する。
+        const std::size_t materialIndex = isCap ? capMaterialIndex : outputIndex;
+        staged.material = source.SubsetArray[materialIndex].Material;
 
-        if (wasCut)
+        if (hasNegative)
         {
-            hasChanges = true;
+            // 負側があれば、基本出力として保持する。
+            staged.primaryVertices = PlayerCutSupport::CopyVertices(surface.negative);
 
-			// 切断後の頂点数とサブセット数を集計する。
-            totalVertexCount += result.negative.size() + result.positive.size();
-            totalSubsetCount += 2;
-
-			// 切断結果をコピーして、元のモデルを変更せずに保持する。
-            // 負側を基本の出力、正側を追加の出力として保持する。
-            staged.primaryVertices = PlayerCutSupport::CopyVertices(result.negative);
-            staged.additionalVertices = PlayerCutSupport::CopyVertices(result.positive);
-        } 
-        else 
-        {
-            // 切断しなかったサブセットも、モデル全体の再構築に必要。
-            // この場合、negativeには元の頂点を保存する。
-            totalVertexCount += input.size();
+            totalVertexCount += surface.negative.size();
             ++totalSubsetCount;
 
-            // 未切断の場合は、元のサブセットだけを保持する。
-            // 平面の正側・負側のどちらにあるかは、この名前に含めない。
-            staged.primaryVertices = PlayerCutSupport::CopyVertices(input);
+            if (hasPositive)
+            {
+                // 両側に頂点がある場合、正側を追加出力にする。
+                staged.additionalVertices = PlayerCutSupport::CopyVertices(surface.positive);
+
+                totalVertexCount += surface.positive.size();
+                ++totalSubsetCount;
+            }
+        }
+        else
+        {
+            // 正側しかない場合は、それを基本出力として保持する。
+            staged.primaryVertices = PlayerCutSupport::CopyVertices(surface.positive);
+
+            totalVertexCount += surface.positive.size();
+            ++totalSubsetCount;
         }
 
-        // unique_ptrの所有権を、一時結果の配列へ移動する。
         pending.push_back(std::move(staged));
     }
 
-    // どのサブセットも切断されなかった場合、更新する必要はない。
-	if (!hasChanges)
-		return;
-
     // ------------------------------------------------------------------------
-    // 3. 既存モデル形式の容量と、更新キューの状態を確認する
+    // 5. 既存モデル形式の容量と、更新キューの状態を確認する
     // ------------------------------------------------------------------------
         
     // 現在のモデルは、頂点数や開始位置などを16ビットで保持している。
@@ -375,6 +413,10 @@ void CutMeshes(DX11_MODEL* model)
 		PrintDebugProc("Mesh cut rejected: model update already pending.\n");
 		return;
 	}
+
+    // ------------------------------------------------------------------------
+	// 6. 取り消し履歴を準備し、モデル更新キューへ切断結果を引き渡す
+    // ------------------------------------------------------------------------
 
     // モデルを変更する前に、取り消し用の状態を保存する。
     const HRESULT historyResult = g_ModelHistory.PrepareCut(model);
@@ -404,7 +446,7 @@ void CutMeshes(DX11_MODEL* model)
 
 
     // ------------------------------------------------------------------------
-    // 4. 完成した全サブセットを、既存のモデル更新キューへ引き渡す
+    // 7. 完成した全サブセットを、既存のモデル更新キューへ引き渡す
     // ------------------------------------------------------------------------
 
     model->newSubsetMaterial.clear();
@@ -426,7 +468,7 @@ void CutMeshes(DX11_MODEL* model)
     }
 
     // ------------------------------------------------------------------------
-    // 5. CPU配列とGPUバッファを更新する
+    // 8. CPU配列とGPUバッファを更新する
     // ------------------------------------------------------------------------
     
     // TryUpdateModelは、成功・失敗のどちらでも更新キューを消費する。
