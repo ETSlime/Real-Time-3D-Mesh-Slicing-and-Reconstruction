@@ -104,3 +104,5 @@ void ResetPlayerPresentation(void);
 bool ReplacePlayerModel(const char* FileName);
 // モデルの位置や形状を変更せず、進行中のドラッグ操作だけを終了する。
 void CancelPlayerCutGesture(void);
+// 取り消しとやり直しのショートカットを処理する。
+static bool UpdateModelHistoryShortcuts(void);

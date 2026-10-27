@@ -441,10 +441,18 @@ HRESULT InitRenderer(HINSTANCE hInstance, HWND hWnd, BOOL bWindow)
 	sd.Windowed = bWindow;
 
 	//デバッグ文字出力用設定
-#if defined(_DEBUG) && defined(DEBUG_DISP_TEXTOUT)
+#if defined(DEBUG_DISP_TEXTOUT)
+	// GDI による文字描画に対応したバックバッファーを使用する。
 	sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-	sd.Flags = DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE;
-	deviceFlags = D3D11_CREATE_DEVICE_DEBUG | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+	sd.Flags |= DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE;
+
+	deviceFlags |= D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+
+#ifdef _DEBUG
+	// デバッグレイヤーは Debug ビルドでのみ有効にする。
+	deviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
 #endif
 
 	hr = D3D11CreateDeviceAndSwapChain( NULL,
@@ -463,7 +471,7 @@ HRESULT InitRenderer(HINSTANCE hInstance, HWND hWnd, BOOL bWindow)
 		return hr;
 
 	//デバッグ文字出力用設定
-#if defined(_DEBUG) && defined(DEBUG_DISP_TEXTOUT)
+#if defined(DEBUG_DISP_TEXTOUT)
 	hr = g_SwapChain->ResizeBuffers(0, SCREEN_WIDTH, SCREEN_HEIGHT, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE); // N.B. the GDI compatible flag
 	if (FAILED(hr))
 		return hr;
@@ -858,7 +866,7 @@ void Present(void)
 //=============================================================================
 void DebugTextOut(char* text, int x, int y)
 {
-#if defined(_DEBUG) && defined(DEBUG_DISP_TEXTOUT)
+#if defined(DEBUG_DISP_TEXTOUT)
 	HRESULT hr;
 
 	//バックバッファからサーフェスを取得する

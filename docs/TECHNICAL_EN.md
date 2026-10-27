@@ -6,7 +6,7 @@
 
 Mesh Cut is an interactive mesh-slicing demonstration built with C++, DirectX 11, and DirectXMath. A mouse stroke defines a cutting plane. The CPU clips the input triangles, reconstructs section contours, builds caps for both halves, and prepares replacement rendering resources.
 
-The current implementation supports plane slicing, intersection-attribute interpolation, capping of simple concave contours, multiple separate non-nested contours, and repeated cuts of the resulting mesh. OBJ drag and drop replaces the model; F1 switches solid/wireframe rendering, and F3 toggles the cutting-plane visualization.
+The current implementation supports plane slicing, intersection-attribute interpolation, capping of simple concave contours, multiple separate non-nested contours, and repeated cuts of the resulting mesh. OBJ drag and drop replaces the model; F1 switches solid/wireframe rendering, and F3 toggles the cutting-plane visualization. Two-stack snapshot history supports undo/redo, with on-screen controls in both Debug and Release.
 
 A cut reconstructs triangle surfaces and offsets both sides. It does not generate collision shapes or simulate separate rigid bodies.
 
@@ -18,6 +18,8 @@ A cut reconstructs triangle surfaces and offsets both sides. It does not generat
 | `ObjImporter` | OBJ/MTL parsing and CPU vertex, index, subset, and material data |
 | `player.cpp` | Stroke interaction, plane conversion, algorithm integration, staging, and model updates |
 | `MeshCutter` | Math helpers, interpolation, clipping, intersection topology, contour triangulation, and caps |
+| `ModelSnapshot.h / .cpp` | Independent model snapshots, texture-reference ownership, and CPU/GPU restoration |
+| `ModelHistory.h / .cpp` | Two history stacks, cut-history commits, undo/redo, and clearing |
 | `renderer.cpp` | DirectX resources and combined fill/cull rasterizer states |
 | `camera.cpp` | Perspective camera, matrices, and reset behavior |
 
@@ -32,7 +34,7 @@ The pipeline is:
 5. Merge intersection nodes, recover closed contours, and project them to 2D.
 6. Reject unsupported nested contours and triangulate caps with ear clipping.
 7. Generate cap attributes and offset both halves.
-8. Stage every subset, prepare replacement CPU/GPU resources, and commit the update.
+8. Stage every subset, capture the pre-cut state, prepare CPU/GPU resources, and commit geometry and history.
 
 ## 3. Screen input and the cutting plane
 
@@ -60,6 +62,8 @@ $$
 
 `CreateWorldRayDirection()` transforms this direction by the inverse view matrix and normalizes it. Translation is excluded for the direction. The origin is obtained separately by transforming the view-space origin into world space.
 
+With zero-based subscripts, $P_{00}$ and $P_{11}$ are the projection matrix’s X and Y scale terms. Setting both to 1 corresponds to a symmetric perspective model with a $90^\circ$ vertical field of view and aspect ratio 1, not orthographic projection. The direction is constructed with `w=0` and transformed using `XMVector3TransformNormal()`, excluding camera translation.
+
 Omitting division by $P_{00}/P_{11}$ does not produce orthographic rays: they still diverge from one origin, but no longer match the actual camera projection. This construction assumes a conventional symmetric perspective camera and a full-window viewport, not orthographic or off-center projection.
 
 ### 3.2 A plane through two rays
@@ -67,7 +71,7 @@ Omitting division by $P_{00}/P_{11}$ does not produce orthographic rays: they st
 Let $D_s,D_e$ be the unit directions for the stroke endpoints, with shared camera origin $O$:
 
 $$
-N=\operatorname{normalize}(D_e\times D_s),\qquad Q=O
+N=\mathrm{normalize}(D_e\times D_s),\qquad Q=O
 $$
 
 The cutting plane satisfies:
@@ -101,7 +105,7 @@ Q_{local}=Q_{world}W^{-1}
 $$
 
 $$
-N_{local}=\operatorname{normalize}(N_{world}W^T)
+N_{local}=\mathrm{normalize}(N_{world}W^T)
 $$
 
 Normals use the inverse transpose of the matrix that performs the coordinate transformation. Here that transformation is $W^{-1}$, so:
@@ -193,6 +197,14 @@ Equal positions with different node indices would leave segments disconnected. N
 
 Zero or one hit does not form a segment; two hits do. Three distinct hits are treated as a coplanar/ambiguous case and reject the operation. Positional tolerance affects these classifications.
 
+### 7.1 Existing-edge cuts and coplanar triangles
+
+Two hits alone do not establish a split. When the plane passes through an existing edge, a triangle may produce two hits while its third vertex lies entirely on one side. That edge can still contribute a section segment. If the complete input contains vertices strictly on both sides and the segments form supported closed contours, a cut can follow existing mesh edges without crossing triangle interiors. Merely touching an exterior surface without vertices on both sides does not commit a cut.
+
+A nondegenerate triangle with three distinct vertices classified on the plane produces three hits and returns `OpenOrAmbiguousContour`. This is a retained limitation: even if other regions extend to both sides, the coplanar triangle cancels the attempted model update. The implementation does not resolve which side should own such a face or whether to retain or replace it.
+
+`Clip()` may already have generated temporary surfaces before rejection. They are not committed. Rejecting a coplanar triangle does not imply that clipping produced no output; it means that the attempted operation is not accepted.
+
 ## 8. Adjacency and closed contours
 
 `nodes[i]` stores a section vertex; `adjacency[i]` stores connected node indices. Each segment AB is registered in both directions.
@@ -211,7 +223,7 @@ Each traversal registers a new node or terminates at a visited node, so it canno
 A reference axis R is selected to avoid near-parallel alignment with the unit normal: X when $|N_x|<0.9$, otherwise Y.
 
 $$
-U=\operatorname{normalize}(R\times N),\qquad V=N\times U
+U=\mathrm{normalize}(R\times N),\qquad V=N\times U
 $$
 
 With $U\times V=N$, points are projected as:
@@ -337,47 +349,95 @@ CPU arrays transfer through `release()`; temporary GPU owners are cleared after 
 
 The path handles existing algorithm failure results, invalid arguments/capacity, allocation failure, and buffer-creation failure. It is not comprehensive recovery for every malformed asset or possible exception. Internal `SimpleArray` storage release relies on that container's existing destructor contract.
 
-## 14. OBJ drag and drop
+## 14. Snapshots, undo, and redo
+
+### 14.1 Snapshot contents
+
+`ModelSnapshot` stores independent vertex, index, and subset/material arrays. Positions, normals, colors, UVs, previously generated caps, and baked separation offsets are part of the saved model state. GPU buffers, the camera, presentation transforms, fill mode, and the plane-visibility setting are not captured.
+
+`Capture()` deep-copies CPU arrays without duplicating texture pixels. It calls `AddRef()` for each saved subset texture and matches those references with `Release()` in the snapshot destructor. Snapshots cannot be copied and are owned through `unique_ptr<ModelSnapshot>`.
+
+`Restore()` copies replacement CPU arrays with the saved indices and subset ranges, then creates replacement vertex and index buffers. It does not use the cutting queues or rerun slicing. After preparation succeeds, it acquires texture references for the restored model, releases the old model through `UnloadModel()`, and installs the resources. Allocation or buffer-creation failure leaves the displayed model intact.
+
+### 14.2 Two stacks
+
+`ModelHistory` maintains undo and redo histories using two `std::stack<std::unique_ptr<ModelSnapshot>>` containers. The currently displayed model is separate; stack entries represent other recoverable states.
+
+| Operation | Restore from | Save the current state to |
+|---|---|---|
+| Undo | Undo-stack top | Redo stack |
+| Redo | Redo-stack top | Undo stack |
+
+After two successful cuts A → B → C, the display shows C and the undo stack contains A, B from bottom to top. Undo displays B, leaving A on the undo stack and C on the redo stack. A second undo displays A and leaves C, B on the redo stack from bottom to top. Redo restores B and then C.
+
+This does not move the same snapshot between stacks: restoring B consumes B, while a newly captured snapshot of C is saved to the opposite stack.
+
+### 14.3 Committing geometry and history
+
+After slicing and capacity checks, `PrepareCut()` captures the old model and temporarily pushes it onto the undo stack. `TryUpdateModel()` attempts the replacement; a local `CutHistoryGuard` invokes `FinishCut()` when its scope ends.
+
+Success retains the undo entry and clears redo. Failure removes the temporary entry and preserves existing redo history. Missed cuts, algorithm rejection, and capacity rejection add no entry. If the old state cannot be saved, the cut is not committed.
+
+Undo/redo also capture and push the current state before changing the model, because a stack push may allocate memory. Restore failure removes the newly pushed entry and leaves the source stack intact. Success pops the consumed source entry. Empty history returns `S_FALSE`, while an actual restore returns `S_OK`; neither is an HRESULT failure.
+
+A successful model import clears both stacks; a failed import retains them. A successful new cut after undo creates a new editing branch and discards the old redo history. Shutdown explicitly clears history to release snapshots and their texture references.
+
+### 14.4 Input and resource scope
+
+`Ctrl+Z` undoes; `Ctrl+Y` or `Ctrl+Shift+Z` redoes. Either Ctrl/Shift key is accepted. Z/Y press edges trigger an operation, so holding a key does not repeat it every frame. History shortcuts are ignored while dragging a cutting stroke. A successful restore invalidates the old cutting-plane preview while retaining its visibility setting, the fill mode, and the camera.
+
+History is memory-only and is not serialized. Every entry stores complete CPU geometry rather than a delta. There is currently no entry-count or memory-budget limit, so memory use grows with editing history. Textures are shared through COM references; history does not duplicate texture pixels or retain a separate GPU mesh buffer for every saved state.
+
+## 15. OBJ drag and drop
 
 `DragAcceptFiles()` and `WM_DROPFILES` receive one OBJ path. The window callback stores the request; the next update performs synchronous loading.
 
 The wide path is converted to the Windows ANSI code page used by the loader, rejecting unrepresentable characters. Separators are normalized to `/` for associated-resource path handling. This is not complete Unicode import. Avoid spaces in referenced MTL/texture filenames and use files compatible with the existing parser.
 
-`ReplacePlayerModel()` loads into a temporary model. Only success swaps CPU data and both GPU buffers into the displayed model, then releases the old resources. Failure keeps the current model.
+`ReplacePlayerModel()` loads into a temporary model. Only success swaps CPU data and both GPU buffers into the displayed model, then releases the old resources. Failure keeps the current model and history. Success clears both history stacks.
 
 Success resets position, rotation, scale, movement inertia, drag state, plane data, and the camera. Dropping the same OBJ again restores its uncut geometry. R resets presentation only, without reloading geometry. The drop gesture is canceled and left-button release is consumed to prevent an accidental cut.
 
 Loading is synchronous, without a background thread. There is no automatic model centering or camera fitting to its bounds.
 
-## 15. Inspection and display controls
+## 16. Display modes and on-screen controls
 
-F1 switches `D3D11_FILL_SOLID / D3D11_FILL_WIREFRAME`. Two fill modes and three cull modes form six pre-created rasterizer states. The renderer tracks both selections and binds their combination, so `SetCullingMode()` does not overwrite the wireframe selection.
+F1 switches `D3D11_FILL_SOLID / D3D11_FILL_WIREFRAME`. Two fill modes and three cull modes form six pre-created rasterizer states. Both selections are tracked and applied together, so `SetCullingMode()` does not overwrite wireframe mode.
 
-F3 toggles the cutting-plane preview. Drawing also requires successfully initialized preview vertices. Four points at distances 15 and 300 along the two rays form the preview quad; those distances do not bound the actual cutting plane.
+F3 toggles the cutting-plane preview. Drawing requires successfully initialized preview vertices. Four points at distances 15 and 300 along the two rays form the preview quad; those distances do not bound the mathematical cutting plane.
 
-The preview represents the most recently attempted plane and may update even when slicing is rejected. Reset clears the old preview while preserving the visibility selection. The selected fill mode also affects the preview. Debug text shows the F1/F3 controls and their current settings.
+The preview represents the most recently attempted plane and may update even when slicing is rejected. Model reset and successful undo/redo invalidate the old preview while preserving its visibility setting. The selected fill mode also affects the preview.
+
+`PrintDebugProc()` registers per-frame control text; `DrawDebugProc()` calls `DebugTextOut()` to render it. F1/F3 settings and history shortcuts are displayed in both Debug and Release. Text support uses `DEBUG_DISP_TEXTOUT`, a BGRA back buffer, and a GDI-compatible swap chain. The D3D debug layer remains Debug-only. Camera orbit, height, distance controls, and R reset are enabled in both Debug and Release. 
 
 | Input | Action |
 |---|---|
 | Left drag and release | Attempt a cut |
-| Drop one OBJ | Replace and reset the model |
+| Drop one OBJ | Replace/reset the model; clear history on success |
+| Ctrl + Z | Undo |
+| Ctrl + Y / Ctrl + Shift + Z | Redo |
 | F1 | Solid / wireframe |
 | F3 | Cutting-plane visibility |
 | Arrow keys | Move the model relative to camera heading |
-| Z/C, Y/N, U/M | Debug: orbit, camera height, closer/farther |
-| R | Debug: reset model transform and camera, retaining cut geometry |
+| A / D | orbit the camera horizontally |
+| W / N | raise / lower the camera |
+| U / M | move the camera closer / farther |
+| R | reset model transform and camera, retaining cut geometry |
 | Esc | Exit |
 
-## 16. Environment and limitations
+Camera orbit uses A/D and upward movement uses W, leaving Z/Y for history shortcuts. The camera therefore needs no Ctrl-conflict check.
+
+## 17. Environment and limitations
 
 Build the Windows Visual Studio project with its DirectX 11, DirectXMath, input, and D3DX11 dependencies available. Use the current C++17 configuration and ensure shader/asset relative paths match the working directory. Triangulated OBJ assets with normals, UVs, explicit material groups, and valid MTL/texture references are recommended.
 
 - Every subset being capped must provide a closed section graph. Material groups that split a closed object into open surface patches can cause rejection.
 - Simple concave contours are supported; holes, self-intersection handling, and general mesh repair are not.
-- Coplanarity, very small geometry, and tolerance-induced merging may cause rejection. Rejection does not mean geometry has been repaired.
+- A coplanar triangle with three distinct on-plane vertices rejects the entire update, even if other regions lie on both sides. Very small geometry and tolerance-induced merging may also cause rejection. Rejection is not mesh repair.
+- History stores complete CPU geometry, with no entry-count/memory-budget limit or persistence.
 - Wireframe displays triangle edges, not only the object's silhouette.
 - Curved blades, arbitrary solid Boolean operations, collision generation, and rigid-body simulation are outside the scope.
 - Node merging uses linear search. Repeated ear-candidate searches with scans of other vertices can take cubic time in the worst case. No large-mesh performance optimization claim is made.
 - The 16-bit capacity, asset scale, and numerical tolerances limit the depth and stability of repeated cuts.
 
-Suggested demonstration: straight and diagonal cube cuts → recut the result → an L-prism concave section → F1 triangulation inspection → F3 plane inspection → drop the asset again to restore its geometry.
+Suggested demonstration: straight and diagonal cube cuts → repeated undo/redo → a new cut after undo to demonstrate branching → an L-prism concave section → F1 triangulation inspection → F3 plane inspection → reload the asset to restore geometry and clear history.

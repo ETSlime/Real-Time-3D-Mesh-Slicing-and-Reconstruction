@@ -89,10 +89,7 @@ void UninitCamera(void)
 //=============================================================================
 void UpdateCamera(void)
 {
-
-#ifdef _DEBUG
-
-	if (GetKeyboardPress(DIK_Z))
+	if (GetKeyboardPress(DIK_A))
 	{// 視点旋回「左」
 		g_Camera.rot.y += VALUE_ROTATE_CAMERA;
 		if (g_Camera.rot.y > XM_PI)
@@ -104,7 +101,7 @@ void UpdateCamera(void)
 		g_Camera.pos.z = g_Camera.at.z - cosf(g_Camera.rot.y) * g_Camera.len;
 	}
 
-	if (GetKeyboardPress(DIK_C))
+	if (GetKeyboardPress(DIK_D))
 	{// 視点旋回「右」
 		g_Camera.rot.y -= VALUE_ROTATE_CAMERA;
 		if (g_Camera.rot.y < -XM_PI)
@@ -116,7 +113,7 @@ void UpdateCamera(void)
 		g_Camera.pos.z = g_Camera.at.z - cosf(g_Camera.rot.y) * g_Camera.len;
 	}
 
-	if (GetKeyboardPress(DIK_Y))
+	if (GetKeyboardPress(DIK_W))
 	{// 視点移動「上」
 		g_Camera.pos.y += VALUE_MOVE_CAMERA;
 	}
@@ -180,13 +177,8 @@ void UpdateCamera(void)
 		ResetCamera();
 	}
 
-#endif
+	PrintDebugProc("Camera:AD QE TB WN UM R\n");
 
-
-
-#ifdef _DEBUG	// デバッグ情報を表示する
-	PrintDebugProc("Camera:ZC QE TB YN UM R\n");
-#endif
 }
 
 
@@ -307,7 +299,7 @@ void SetCameraAT(XMFLOAT3 pos)
 	g_Camera.pos.x = g_Camera.at.x - sinf(g_Camera.rot.y) * g_Camera.len;
 	g_Camera.pos.z = g_Camera.at.z - cosf(g_Camera.rot.y) * g_Camera.len;
 
-	PrintDebugProc("camera pos X: %f Y: %f Z: %f\n", g_Camera.pos.x, g_Camera.pos.y, g_Camera.pos.z);
+	//PrintDebugProc("camera pos X: %f Y: %f Z: %f\n", g_Camera.pos.x, g_Camera.pos.y, g_Camera.pos.z);
 
 }
 

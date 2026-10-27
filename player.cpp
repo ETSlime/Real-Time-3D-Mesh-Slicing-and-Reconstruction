@@ -10,6 +10,7 @@
 #include "camera.h"
 #include "debugproc.h"
 #include "player.h"
+#include "ModelHistory.h"
 
 //*****************************************************************************
 // マクロ定義
@@ -33,14 +34,16 @@
 // グローバル変数
 //*****************************************************************************
 static PLAYER				g_Player;						// プレイヤー
-static BOOL isDragging = FALSE;
-static float startX = 0, startY = 0;
-static float currentX = 0, currentY = 0;
-static float endX = 0, endY = 0;
+static BOOL g_IsDragging = FALSE;
+static float g_StartX = 0, g_StartY = 0;
+static float g_CurrentX = 0, g_CurrentY = 0;
+static float g_EndX = 0, g_EndY = 0;
 static ID3D11Buffer* g_CuttingPlaneVertexBuffer = NULL;	// 頂点バッファ
-static Plane cuttingPlane;
+static Plane g_CuttingPlane;
 static bool g_ShowCuttingPlane = false;         // 切断平面のデバッグ表示を有効にするか。
 static bool g_HasCuttingPlane = false;          // 表示可能な切断平面の頂点が作成済みか。
+static ModelHistory g_ModelHistory;             // 現在のプレイヤーモデルに対する編集履歴。
+
 //=============================================================================
 // 初期化処理
 //=============================================================================
@@ -61,12 +64,16 @@ HRESULT InitPlayer(void)
 //=============================================================================
 void UninitPlayer(void)
 {
-    if (g_CuttingPlaneVertexBuffer) {
+    // 終了時に、履歴が保持しているモデルデータとテクスチャ参照を解放する。
+    g_ModelHistory.Clear();
+
+    if (g_CuttingPlaneVertexBuffer) 
+    {
         g_CuttingPlaneVertexBuffer->Release();
         g_CuttingPlaneVertexBuffer = nullptr;
     }
 
-    isDragging = FALSE;
+    g_IsDragging = FALSE;
 
 	// モデルの解放処理
 	if (g_Player.load)
@@ -83,6 +90,10 @@ void UninitPlayer(void)
 //=============================================================================
 void UpdatePlayer(void)
 {
+    // 履歴操作を行ったフレームでは、通常のプレイヤー更新を省略する。
+    if (UpdateModelHistoryShortcuts())
+        return;
+
 	CAMERA *cam = GetCamera();
 
     // F2を押した瞬間だけ、切断平面の表示設定を切り替える。
@@ -172,6 +183,9 @@ void UpdatePlayer(void)
     PrintDebugProc(
         "F3: 切断平面の表示切替 [%s]\n",
         cuttingPlaneText);
+
+    PrintDebugProc("Ctrl + Z: 元に戻す\n");
+    PrintDebugProc("Ctrl + Y / Ctrl + Shift + Z: やり直す\n");
 }
 
 //=============================================================================
@@ -228,8 +242,8 @@ void CutMeshes(DX11_MODEL* model)
 
     const MeshCutter::Plane plane
     {
-        MeshCutter::Read(cuttingPlane.localPoint),
-        MeshCutter::Read(cuttingPlane.localNormal)
+        MeshCutter::Read(g_CuttingPlane.localPoint),
+        MeshCutter::Read(g_CuttingPlane.localNormal)
     };
 
     // この配列へ保存している間は、元のモデルを変更しない。
@@ -362,12 +376,40 @@ void CutMeshes(DX11_MODEL* model)
 		return;
 	}
 
-    model->newSubsetMaterial.clear();
-    model->oldSubsetMaterial.clear();
+    // モデルを変更する前に、取り消し用の状態を保存する。
+    const HRESULT historyResult = g_ModelHistory.PrepareCut(model);
+
+    if (FAILED(historyResult))
+    {
+        PrintDebugProc(
+            "取り消し履歴の保存に失敗しました: 0x%08X\n",
+            static_cast<unsigned int>(historyResult));
+
+        return;
+    }
+
+    // この関数を抜ける際に、切り取り履歴を必ず確定または取り消す。
+    struct CutHistoryGuard
+    {
+        ModelHistory& history;
+        bool succeeded = false;
+
+        ~CutHistoryGuard()
+        {
+            history.FinishCut(succeeded);
+        }
+    };
+
+    CutHistoryGuard historyGuard{ g_ModelHistory };
+
 
     // ------------------------------------------------------------------------
     // 4. 完成した全サブセットを、既存のモデル更新キューへ引き渡す
     // ------------------------------------------------------------------------
+
+    model->newSubsetMaterial.clear();
+    model->oldSubsetMaterial.clear();
+
     for (PlayerCutSupport::PendingSubset& subset : pending)
     {
         // 基本の出力は、切断の有無にかかわらず存在する。
@@ -394,9 +436,14 @@ void CutMeshes(DX11_MODEL* model)
     if (FAILED(updateResult))
     {
         PrintDebugProc(
-            "Mesh cut model update failed: 0x%08X\n",
-            static_cast<unsigned>(updateResult));
+            "切り取り結果の反映に失敗しました: 0x%08X\n",
+            static_cast<unsigned int>(updateResult));
+
+        return;
     }
+
+    // モデルの置き換えに成功したため、切り取り履歴を確定する。
+    historyGuard.succeeded = true;
 }
 
 //=============================================================================
@@ -418,7 +465,7 @@ void SetLocalCuttingPlane(void)
 
     // 切断平面上の点をローカル空間へ変換する。
     // 点の変換には平行移動も含める。
-    const XMVECTOR worldPoint = XMLoadFloat3(&cuttingPlane.point);
+    const XMVECTOR worldPoint = XMLoadFloat3(&g_CuttingPlane.point);
     const XMVECTOR localPoint = XMVector3TransformCoord(worldPoint, inverseWorldMatrix);
 
     // ワールド法線をローカル法線へ戻す場合は、
@@ -426,7 +473,7 @@ void SetLocalCuttingPlane(void)
     const XMMATRIX transposedWorldMatrix = XMMatrixTranspose(worldMatrix);
 
 	// ワールド法線をローカル法線へ変換する。
-    const XMVECTOR worldNormal = XMLoadFloat3(&cuttingPlane.normal);
+    const XMVECTOR worldNormal = XMLoadFloat3(&g_CuttingPlane.normal);
     XMVECTOR localNormal =
         XMVector3TransformNormal(
             worldNormal,
@@ -436,11 +483,11 @@ void SetLocalCuttingPlane(void)
     localNormal = XMVector3Normalize(localNormal);
 
     // 三角形の切断判定で使用するローカル平面を保存する。
-    XMStoreFloat3(&cuttingPlane.localPoint, localPoint);
-    XMStoreFloat3(&cuttingPlane.localNormal, localNormal);
+    XMStoreFloat3(&g_CuttingPlane.localPoint, localPoint);
+    XMStoreFloat3(&g_CuttingPlane.localNormal, localNormal);
 
     // 交点をワールド空間へ戻す処理のために保存する。
-    XMStoreFloat4x4(&cuttingPlane.localmtxWorld, worldMatrix);
+    XMStoreFloat4x4(&g_CuttingPlane.localmtxWorld, worldMatrix);
 }
 
 //=============================================================================
@@ -462,19 +509,19 @@ void ResetPlayerPresentation(void)
     g_Player.use = TRUE;
 
     // モデル変更前のドラッグ操作を引き継がないようにする。
-    isDragging = FALSE;
+    g_IsDragging = FALSE;
 
-    startX = 0.0f;
-    startY = 0.0f;
+    g_StartX = 0.0f;
+    g_StartY = 0.0f;
 
-    currentX = 0.0f;
-    currentY = 0.0f;
+    g_CurrentX = 0.0f;
+    g_CurrentY = 0.0f;
 
-    endX = 0.0f;
-    endY = 0.0f;
+    g_EndX = 0.0f;
+    g_EndY = 0.0f;
 
     // 前回の切断平面の情報をクリアする。
-    cuttingPlane = {};
+    g_CuttingPlane = {};
 
     // 前のモデルで生成した切断平面を表示しない。
     g_HasCuttingPlane = false;
@@ -529,6 +576,9 @@ bool ReplacePlayerModel(const char* FileName)
     ResetPlayerPresentation();
     ResetCamera();
 
+    // 別のモデルへ切り替えたため、以前の編集履歴を破棄する。
+    g_ModelHistory.Clear();
+
     return true;
 }
 
@@ -537,11 +587,69 @@ bool ReplacePlayerModel(const char* FileName)
 //=============================================================================
 void CancelPlayerCutGesture(void)
 {
-    isDragging = FALSE;
+    g_IsDragging = FALSE;
 
-    startX = startY = 0.0f;
-    currentX = currentY = 0.0f;
-    endX = endY = 0.0f;
+    g_StartX = g_StartY = 0.0f;
+    g_CurrentX = g_CurrentY = 0.0f;
+    g_EndX = g_EndY = 0.0f;
+}
+
+bool UpdateModelHistoryShortcuts(void)
+{
+    // 修飾キーは左右どちらでも使用できる。
+    const bool controlPressed = GetKeyboardPress(DIK_LCONTROL) || GetKeyboardPress(DIK_RCONTROL);
+    const bool shiftPressed = GetKeyboardPress(DIK_LSHIFT) || GetKeyboardPress(DIK_RSHIFT);
+
+    const bool zPressed = GetKeyboardPress(DIK_Z) != 0;
+    const bool yPressed = GetKeyboardPress(DIK_Y) != 0;
+
+    // 押し続けている間に、毎フレーム実行されることを防ぐ。
+    static bool previousZPressed = false;
+    static bool previousYPressed = false;
+
+    const bool zTriggered = zPressed && !previousZPressed;
+    const bool yTriggered = yPressed && !previousYPressed;
+
+    previousZPressed = zPressed;
+    previousYPressed = yPressed;
+
+    // キー状態は毎フレーム更新し、操作できない場合だけ処理を省略する。
+    if (!g_Player.load || g_IsDragging)
+        return false;
+
+    if (!controlPressed)
+        return false;
+
+    HRESULT result = S_FALSE;
+
+    // Ctrl + Shift + Z は、Ctrl + Z より先に判定する。
+    if (yTriggered || (shiftPressed && zTriggered))
+    {
+        result = g_ModelHistory.Redo(&g_Player.model);
+    }
+    else if (zTriggered)
+    {
+        result = g_ModelHistory.Undo(&g_Player.model);
+    }
+    else
+    {
+        return false;
+    }
+
+    if (result == S_OK)
+    {
+        // 過去の切断平面は、復元後の形状と一致するとは限らない。
+        g_HasCuttingPlane = false;
+    }
+    else if (FAILED(result))
+    {
+        PrintDebugProc(
+            "編集履歴の復元に失敗しました: 0x%08X\n",
+            static_cast<unsigned int>(result));
+    }
+
+    // 履歴が空の場合も、ショートカット入力として処理済みにする。
+    return true;
 }
 
 //=============================================================================
@@ -556,27 +664,27 @@ void UpdateMeshCut(void)
 {
 	if (IsMouseLeftTriggered())
 	{
-		isDragging = TRUE;
-		startX = GetMousePosX();
-		startY = GetMousePosY();
-		currentX = startX;
-		currentY = startY;
-		endX = 0.0f;
-		endY = 0.0f;
+        g_IsDragging = TRUE;
+        g_StartX = GetMousePosX();
+        g_StartY = GetMousePosY();
+		g_CurrentX = g_StartX;
+		g_CurrentY = g_StartY;
+        g_EndX = 0.0f;
+        g_EndY = 0.0f;
 	}
-	else if (IsMouseLeftPressed() && isDragging == TRUE)
+	else if (IsMouseLeftPressed() && g_IsDragging == TRUE)
 	{
 		long newX = GetMousePosX();
 		long newY = GetMousePosY();
-		currentX = newX;
-		currentY = newY;
+		g_CurrentX = newX;
+		g_CurrentY = newY;
 
 	}
-	else if (!IsMouseLeftPressed() && isDragging == TRUE)
+	else if (!IsMouseLeftPressed() && g_IsDragging == TRUE)
 	{
-		isDragging = FALSE;
-		endX = GetMousePosX();
-		endY = GetMousePosY();
+        g_IsDragging = FALSE;
+        g_EndX = GetMousePosX();
+        g_EndY = GetMousePosY();
 
 		UpdateCuttingPlane();
 	}
@@ -605,8 +713,8 @@ void MakeCuttingPlaneVertex()
 void UpdateCuttingPlane()
 {
     // ごく短いドラッグでは、安定した切断方向を決められない。
-    const float dragX = endX - startX;
-    const float dragY = endY - startY;
+    const float dragX = g_EndX - g_StartX;
+    const float dragY = g_EndY - g_StartY;
 
     const float dragLengthSquared =
         dragX * dragX + dragY * dragY;
@@ -624,15 +732,15 @@ void UpdateCuttingPlane()
     // ドラッグ開始位置と終了位置に対応するレイ方向を求める。
     const XMVECTOR startDirection =
         MeshCutter::CreateWorldRayDirection(
-            startX,
-            startY,
+            g_StartX,
+            g_StartY,
             projectionMatrix,
             inverseViewMatrix);
 
     const XMVECTOR endDirection =
         MeshCutter::CreateWorldRayDirection(
-            endX,
-            endY,
+            g_EndX,
+            g_EndY,
             projectionMatrix,
             inverseViewMatrix);
 
@@ -651,8 +759,8 @@ void UpdateCuttingPlane()
     const XMVECTOR planeNormal = XMVector3Normalize(normalCandidate);
 
     // 切断平面はカメラ位置を通り、2本のレイを含む。
-    XMStoreFloat3(&cuttingPlane.point, rayOrigin);
-    XMStoreFloat3(&cuttingPlane.normal, planeNormal);
+    XMStoreFloat3(&g_CuttingPlane.point, rayOrigin);
+    XMStoreFloat3(&g_CuttingPlane.normal, planeNormal);
 
     // 計算したワールド空間の平面を使用して切断する。
     if (g_Player.load)
@@ -699,7 +807,7 @@ void UpdateCuttingPlane()
             &vertices[i].Position,
             previewPositions[i]);
 
-        vertices[i].Normal = cuttingPlane.normal;
+        vertices[i].Normal = g_CuttingPlane.normal;
 
         vertices[i].Diffuse =
             XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -784,10 +892,10 @@ bool PlayerCutSupport::IsInsideStroke(MeshCutter::Vec3 point)
     // 水平・垂直ドラッグも扱えるよう、既存の余白を維持する。
     const float margin = 2.0f;
 
-    const float minimumX = (std::min)(startX, endX) - margin;
-    const float maximumX = (std::max)(startX, endX) + margin;
-    const float minimumY = (std::min)(startY, endY) - margin;
-    const float maximumY = (std::max)(startY, endY) + margin;
+    const float minimumX = (std::min)(g_StartX, g_EndX) - margin;
+    const float maximumX = (std::max)(g_StartX, g_EndX) + margin;
+    const float minimumY = (std::min)(g_StartY, g_EndY) - margin;
+    const float maximumY = (std::max)(g_StartY, g_EndY) + margin;
 
     return screenX >= minimumX
         && screenX <= maximumX

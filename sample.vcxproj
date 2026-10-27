@@ -145,6 +145,8 @@
     <ClInclude Include="main.h" />
     <ClInclude Include="MeshCutter.h" />
     <ClInclude Include="model.h" />
+    <ClInclude Include="ModelHistory.h" />
+    <ClInclude Include="ModelSnapshot.h" />
     <ClInclude Include="ObjImporter.h" />
     <ClInclude Include="player.h" />
     <ClInclude Include="renderer.h" />
@@ -160,6 +162,8 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MeshCutter.cpp" />
     <ClCompile Include="model.cpp" />
+    <ClCompile Include="ModelHistory.cpp" />
+    <ClCompile Include="ModelSnapshot.cpp" />
     <ClCompile Include="ObjImporter.cpp" />
     <ClCompile Include="player.cpp" />
     <ClCompile Include="renderer.cpp" />

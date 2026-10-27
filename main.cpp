@@ -522,11 +522,8 @@ void Draw(void)
 
 	DrawEnemy();
 
-
-#ifdef _DEBUG
 	// デバッグ表示
 	DrawDebugProc();
-#endif
 
 	// バックバッファ、フロントバッファ入れ替え
 	Present();
