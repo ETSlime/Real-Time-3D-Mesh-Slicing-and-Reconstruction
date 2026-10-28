@@ -390,6 +390,34 @@ void CutMeshes(DX11_MODEL* model)
         pending.push_back(std::move(staged));
     }
 
+    // 切断しなかった成分も、元の材質と位置で更新結果へ含める。
+    for (std::size_t subsetIndex = 0;
+        subsetIndex < result.unchangedSubsets.size();
+        ++subsetIndex)
+    {
+        const std::vector<VERTEX_3D>& vertices =
+            result.unchangedSubsets[subsetIndex];
+
+        if (vertices.empty())
+        {
+            continue;
+        }
+
+        PlayerCutSupport::PendingSubset staged;
+
+        staged.material =
+            source.SubsetArray[subsetIndex].Material;
+
+        // 未変更の表面なので、追加出力は作成しない。
+        staged.primaryVertices =
+            PlayerCutSupport::CopyVertices(vertices);
+
+        totalVertexCount += vertices.size();
+        ++totalSubsetCount;
+
+        pending.push_back(std::move(staged));
+    }
+
     // ------------------------------------------------------------------------
     // 5. 既存モデル形式の容量と、更新キューの状態を確認する
     // ------------------------------------------------------------------------

@@ -4,6 +4,10 @@
 #include <cmath>
 #include <cstddef>
 #include <vector>
+#include <cstdint>
+#include <functional>
+#include <unordered_map>
+#include <stack>
 
 // メッシュ切断のCPU側計算を担当する。
 // 描画バッファやプレイヤーの状態は直接操作しない。
@@ -81,19 +85,6 @@ public:
         TriangulationFailed
     };
 
-    // 頂点型を維持したまま、切断結果を保持する。
-    template<class VertexType>
-    struct Result
-    {
-        Status status = Status::Unchanged;
-
-        // 平面法線の反対側にある三角形頂点。
-        std::vector<VertexType> negative;
-
-        // 平面法線が向く側にある三角形頂点。
-        std::vector<VertexType> positive;
-    };
-
     // 元サブセットの表面を、平面の両側へ切り分けた結果。
     // 封口用の三角形は含めない。
     template<class VertexType>
@@ -116,6 +107,10 @@ public:
         // 元サブセットごとの原表面を保持する。
         // 入力と同じ順序・要素数を維持し、材質の対応付けに使用する。
         std::vector<SurfaceResult<VertexType>> subsets;
+
+        // 切断しなかった成分の原表面。
+        // 元の位置と属性を維持し、同じ材質番号ごとに保持する。
+        std::vector<std::vector<VertexType>> unchangedSubsets;
 
         // 全サブセットの交線から生成した、両側の封口。
         // 元表面とは分離し、呼び出し元で封口用の材質を設定する。
@@ -144,19 +139,6 @@ public:
         const XMMATRIX& projectionMatrix,
         const XMMATRIX& inverseViewMatrix);
 
-    // 三角形配列を平面で切断し、両側のメッシュを生成する。
-    // inputとplaneは、同じローカル座標空間で指定する。
-    template<class V, class Accept>
-    static Result<V> Slice(const std::vector<V>& input, Plane plane, Options opt, Accept accept);
-
-    // 画面上のドラッグ範囲を制限せずに切断する。
-    template<class V>
-    static Result<V> Slice(const std::vector<V>& input, Plane plane, Options opt);
-
-    // 設定を省略した場合は、既定値を使用する。
-    template<class V>
-    static Result<V> Slice(const std::vector<V>& input, Plane plane);
-
     // 全サブセットの三角形を、同じ平面でまとめて切断する。
     // 原表面はサブセット別に保持し、封口はモデル全体で生成する。
     // 各サブセットの入力は、3頂点ごとに1つの三角形を表す。
@@ -166,6 +148,15 @@ public:
         Plane plane,
         Options options,
         Accept accept);
+
+    // 1つの連結成分について、材質境界を越えて切断と封口を行う。
+    // plane.normalとoptionsは、SliceModelで検証済みとする。
+    template<class VertexType, class Accept>
+    static ModelResult<VertexType> SliceComponent(
+        const std::vector<std::vector<VertexType>>& inputSubsets,
+        const Plane& plane,
+        const Options& options,
+        Accept& accept);
 
 private:
     // ------------------------------------------------------------------------
@@ -187,6 +178,88 @@ private:
         std::size_t indexB;
         std::size_t indexC;
     };
+
+    // 入力内の1つの三角形の位置を表す。
+    // 頂点データそのものは複製しない。
+    struct TriangleReference
+    {
+        // 元の材質サブセット番号。
+        std::size_t subsetIndex;
+
+        // サブセット内で、この三角形が始まる頂点位置。
+        // 入力は展開済みなので、ここから3頂点を参照する。
+        std::size_t vertexStart;
+    };
+
+    // 共有辺で接続された三角形の集合。
+    // 材質サブセットの境界を越えて構築する。
+    struct ConnectedComponent
+    {
+        // TriangleReference一覧への参照番号。
+        std::vector<std::size_t> triangleIndices;
+    };
+
+    // 接続判定専用の、三角形の位置番号。
+    // 元の描画頂点番号とは別に管理する。
+    struct TriangleTopology
+    {
+        std::size_t vertexIndices[3];
+    };
+
+    // 接続判定用の無向辺。
+    // 頂点番号は、小さい方をvertexAに保存する。
+    struct TopologyEdge
+    {
+        std::size_t vertexA;
+        std::size_t vertexB;
+
+        // この辺を持つ三角形の番号。
+        std::size_t triangleIndex;
+
+        // 同じ端点を持つ辺が隣り合うように並べる。
+        bool operator<(const TopologyEdge& other) const
+        {
+            if (vertexA != other.vertexA)
+            {
+                return vertexA < other.vertexA;
+            }
+
+            if (vertexB != other.vertexB)
+            {
+                return vertexB < other.vertexB;
+            }
+
+            return triangleIndex < other.triangleIndex;
+        }
+    };
+
+    // 空間ハッシュで使用する格子座標。
+    struct GridCell
+    {
+        std::int64_t x;
+        std::int64_t y;
+        std::int64_t z;
+
+        bool operator==(const GridCell& other) const
+        {
+            return x == other.x
+                && y == other.y
+                && z == other.z;
+        }
+    };
+
+    // 格子座標をunordered_mapのキーとして使用する。
+    struct GridCellHash
+    {
+        std::size_t operator()(const GridCell& cell) const;
+    };
+
+    // 各格子に、その内部の代表位置番号を保存する。
+    using TopologyGrid =
+        std::unordered_map<
+        GridCell,
+        std::vector<std::size_t>,
+        GridCellHash>;
 
     // 1回のモデル切断で、全サブセットが共有する作業データ。
     // サブセットを切り替えても、この内容は初期化しない。
@@ -249,6 +322,52 @@ private:
     template<class VertexType>
     static void Clip(const VertexType* triangle, const float* distances,
         float side, float epsilon, std::vector<VertexType>& output);
+
+    // ------------------------------------------------------------------------
+    // 材質境界を越えた連結成分の構築
+    // ------------------------------------------------------------------------
+
+    // 全サブセットの三角形を、参照情報の一覧にまとめる。
+    // 不正な頂点数や座標を検出した場合はfalseを返す。
+    // 失敗した場合、呼び出し元は出力を使用しない。
+    template<class VertexType>
+    static bool CollectTriangleReferences(
+        const std::vector<std::vector<VertexType>>& inputSubsets,
+        std::vector<TriangleReference>& triangles);
+
+    // 位置を格子座標へ変換する。
+    // 整数座標として扱えない場合はfalseを返す。
+    static bool TryGetGridCell(
+        Vec3 position,
+        float epsilon,
+        GridCell& cell);
+
+    // 許容誤差内の代表位置を探し、なければ新しく登録する。
+    // 元の描画頂点や、その属性は変更しない。
+    static bool FindOrAddTopologyVertex(
+        Vec3 position,
+        float epsilon,
+        std::vector<Vec3>& positions,
+        TopologyGrid& grid,
+        std::size_t& vertexIndex);
+
+    // 全三角形に、接続判定用の位置番号を割り当てる。
+    // trianglesはCollectTriangleReferencesの成功結果を使用する。
+    // 失敗した場合、呼び出し元は出力を使用しない。
+    template<class VertexType>
+    static bool BuildTriangleTopology(
+        const std::vector<std::vector<VertexType>>& inputSubsets,
+        const std::vector<TriangleReference>& triangles,
+        float epsilon,
+        std::vector<Vec3>& positions,
+        std::vector<TriangleTopology>& topology);
+
+    // 共有辺から三角形の接続関係を作り、連結成分へ分ける。
+    // 位置番号が重複する三角形や、3面以上が共有する辺は拒否する。
+    // 開いた境界の存在だけでは、この段階では拒否しない。
+    static bool BuildConnectedComponents(
+        const std::vector<TriangleTopology>& topology,
+        std::vector<ConnectedComponent>& components);
 
     // 1つのサブセットについて、原表面を切り分けて交線を収集する。
     // plane.normalは、呼び出し前に単位長へ正規化しておく。
@@ -333,7 +452,7 @@ private:
     // 三角形分割の結果から、両側の封口頂点を生成する。
     template<class VertexType>
     static void AppendCapTriangles(
-        Result<VertexType>& result,
+        SurfaceResult<VertexType>& result,
         const std::vector<VertexType>& nodes,
         const std::vector<Point2>& projected,
         const std::vector<TriangleIndices>& capTriangles,

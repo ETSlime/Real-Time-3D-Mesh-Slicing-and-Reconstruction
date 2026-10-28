@@ -10,6 +10,92 @@ MeshCutter::Vec3 MeshCutter::Read(const PositionType& position)
     };
 }
 
+template<class VertexType>
+bool MeshCutter::CollectTriangleReferences(
+    const std::vector<std::vector<VertexType>>& inputSubsets,
+    std::vector<TriangleReference>& triangles)
+{
+    triangles.clear();
+
+    // 材質の区切りを維持した入力から、
+    // モデル全体の三角形参照を収集する。
+    for (std::size_t subsetIndex = 0; subsetIndex < inputSubsets.size(); ++subsetIndex)
+    {
+        const std::vector<VertexType>& vertices = inputSubsets[subsetIndex];
+
+        // 展開済み三角形として扱えることを確認する。
+        if (vertices.size() % 3 != 0)
+            return false;
+
+        for (std::size_t vertexStart = 0; vertexStart < vertices.size(); vertexStart += 3)
+        {
+            // 接続判定に使用する位置が有限であることを確認する。
+            for (std::size_t corner = 0; corner < 3; ++corner)
+            {
+                const Vec3 position = Read(vertices[vertexStart + corner].Position);
+
+                const bool validPosition =
+                    std::isfinite(position.x)
+                    && std::isfinite(position.y)
+                    && std::isfinite(position.z);
+
+                if (!validPosition)
+                    return false;
+            }
+
+            triangles.push_back(TriangleReference{subsetIndex, vertexStart});
+        }
+    }
+
+    return true;
+}
+
+template<class VertexType>
+bool MeshCutter::BuildTriangleTopology(
+    const std::vector<std::vector<VertexType>>& inputSubsets,
+    const std::vector<TriangleReference>& triangles,
+    float epsilon,
+    std::vector<Vec3>& positions,
+    std::vector<TriangleTopology>& topology)
+{
+    positions.clear();
+    topology.clear();
+
+    if (!std::isfinite(epsilon) || epsilon <= 0.0f)
+        return false;
+
+    TopologyGrid grid;
+
+    topology.reserve(triangles.size());
+
+    for (const TriangleReference& reference : triangles)
+    {
+        const std::vector<VertexType>& vertices = inputSubsets[reference.subsetIndex];
+
+        TriangleTopology triangleTopology{};
+
+        for (std::size_t corner = 0; corner < 3; ++corner)
+        {
+            const VertexType& vertex = vertices[reference.vertexStart + corner];
+
+            const Vec3 position = Read(vertex.Position);
+
+            if (!FindOrAddTopologyVertex(
+                position,
+                epsilon,
+                positions,
+                grid,
+                triangleTopology.vertexIndices[corner]))
+                return false;
+        }
+
+        // topology[i]とtriangles[i]は、同じ三角形を表す。
+        topology.push_back(triangleTopology);
+    }
+
+    return true;
+}
+
 template<class VertexType, class Accept>
 bool MeshCutter::ClipSubset(
     const std::vector<VertexType>& input,
@@ -177,205 +263,17 @@ bool MeshCutter::ClipSubset(
     return true;
 }
 
-template<class V, class Accept>
-MeshCutter::Result<V> MeshCutter::Slice(const std::vector<V>& input, Plane plane, Options opt, Accept accept)
-{
-    Result<V> result;
-
-    // 後続処理もこの変数を参照するため、
-    // 今回は既存の変数名eを維持する。
-    const float e = opt.epsilon;
-
-    // 平面法線の長さを求める。
-    const float normalLength = std::sqrt(Dot(plane.normal, plane.normal));
-
-    // 許容誤差には、有限の正数を指定する。
-    const bool validEpsilon = std::isfinite(e) && e > 0.0f;
-
-    // 元の実装と同じ条件で、法線の長さを検査する。
-    const bool validNormal = std::isfinite(normalLength) && normalLength > e;
-
-    // 入力は、3頂点ごとに1つの三角形を表す。
-    const bool validVertexCount = input.size() % 3 == 0;
-
-    // 計算に使用する設定値が有限であることを確認する。
-    const bool validOptions = std::isfinite(opt.separation) && std::isfinite(opt.uvScale);
-
-    // 平面上の基準点が有限の座標を持つことを確認する。
-    const bool validPlanePoint =
-        std::isfinite(plane.point.x)
-        && std::isfinite(plane.point.y)
-        && std::isfinite(plane.point.z);
-
-    // 入力が不正な場合は、切断処理を中止する。
-    if (!validEpsilon
-        || !validNormal
-        || !validVertexCount
-        || !validOptions
-        || !validPlanePoint)
-    {
-        result.status = Status::InvalidInput;
-
-        return result;
-    }
-
-    // 頂点から平面までの値を距離として扱えるよう、
-    // 平面法線を単位長にそろえる。
-    plane.normal = plane.normal * (1.0f / normalLength);
-
-    // 現在は1つの入力に対して作成する。
-    // SliceModelでは、全サブセットに対して同じcontextを使用する。
-    CutContext<V> context;
-
-    // この入力の原表面だけを保持する。
-    SurfaceResult<V> surface;
-
-    Status failureStatus = Status::Unchanged;
-
-    const bool completed = ClipSubset(
-        input,
-        plane,
-        e,
-        accept,
-        surface,
-        context,
-        failureStatus);
-
-    if (!completed)
-    {
-        // 途中の表面と交線は採用せず、中断理由だけを返す。
-        Result<V> stoppedResult;
-        stoppedResult.status = failureStatus;
-
-        return stoppedResult;
-    }
-
-    // 頂点をコピーせず、原表面の配列を既存の結果へ引き渡す。
-    result.negative.swap(surface.negative);
-    result.positive.swap(surface.positive);
-
-    // 後続の封口処理では、共有データを参照する。
-    const auto& nodes = context.nodes;
-    const auto& adjacency = context.adjacency;
-
-    const bool hasBothSides = context.hasPositive && context.hasNegative;
-
-    // 交線を構成するノードがない場合も、変更しない。
-    if (!hasBothSides || nodes.empty())
-        return Result<V>{};
-
-    // 交線の接続関係から、順序付きの閉じた輪郭を取得する。
-    std::vector<std::vector<std::size_t>> loops;
-
-    // 輪郭を構築できなければ、切断は成立しない。
-    if (!BuildClosedContours(adjacency, loops))
-    {
-        result.status = Status::OpenOrAmbiguousContour;
-
-        return result;
-    }
-
-    // 封口処理用に、交点を切断平面の2次元座標へ変換する。
-    const std::vector<Point2> projected = ProjectCutNodesToPlane(nodes, plane);
-
-    // 現在の封口処理は、穴を持つ輪郭には対応していない。
-    if (HasNestedContours(loops, projected))
-    {
-        result.status = Status::UnsupportedHole;
-        return result;
-    }
-
-    // 閉じた輪郭を、封口用の三角形へ分割する。
-    std::vector<TriangleIndices> capTriangles;
-
-    if (!TriangulateContours(loops, projected, e, capTriangles))
-    {
-        // 輪郭の三角形分割に失敗した場合は、切断は成立しない。
-        result.status = Status::TriangulationFailed;
-        return result;
-    }
-
-    // 三角形のノード番号から、両側の封口頂点を生成する。
-    AppendCapTriangles(result, nodes, projected, capTriangles, plane, opt);
-
-    // 負側の原表面と切断面を、同じ量だけ移動する。
-    for (V& vertex : result.negative)
-    {
-        const Vec3 position = Read(vertex.Position);
-
-        const Vec3 separatedPosition = position - plane.normal * opt.separation;
-
-        Write(vertex.Position, separatedPosition);
-    }
-
-    // 正側の原表面と切断面を、反対方向へ移動する。
-    for (V& vertex : result.positive)
-    {
-        const Vec3 position = Read(vertex.Position);
-
-        const Vec3 separatedPosition = position + plane.normal * opt.separation;
-
-        Write(vertex.Position, separatedPosition);
-    }
-
-    // 両側の表面と封口が完成したことを通知する。
-    result.status = Status::Cut;
-
-    return result;
-}
-
-template<class V>
-MeshCutter::Result<V> MeshCutter::Slice(const std::vector<V>& input, Plane plane, Options opt)
-{
-    return Slice(input, plane, opt, [](Vec3) { return true; });
-}
-
-template<class V>
-MeshCutter::Result<V> MeshCutter::Slice(const std::vector<V>& input, Plane plane)
-{
-    return Slice(input, plane, Options{});
-}
-
 template<class VertexType, class Accept>
-MeshCutter::ModelResult<VertexType> MeshCutter::SliceModel(
+MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponent(
     const std::vector<std::vector<VertexType>>& inputSubsets,
-    Plane plane,
-    Options options,
-    Accept accept)
+    const Plane& plane,
+    const Options& options,
+    Accept& accept)
 {
     ModelResult<VertexType> result;
 
-    // -----------------------------------------------------------------
-    // 1. モデル全体で共通の切断設定を確認する
-    // -----------------------------------------------------------------
+    // 平面と設定は外側で検証済み。
     const float epsilon = options.epsilon;
-
-    const float normalLength = std::sqrt(Dot(plane.normal, plane.normal));
-
-    const bool validEpsilon = std::isfinite(epsilon) && epsilon > 0.0f;
-
-    const bool validNormal = std::isfinite(normalLength) && normalLength > epsilon;
-
-    const bool validOptions =
-        std::isfinite(options.separation)
-        && std::isfinite(options.uvScale);
-
-    const bool validPlanePoint =
-        std::isfinite(plane.point.x)
-        && std::isfinite(plane.point.y)
-        && std::isfinite(plane.point.z);
-
-    if (!validEpsilon
-        || !validNormal
-        || !validOptions
-        || !validPlanePoint)
-    {
-        result.status = Status::InvalidInput;
-        return result;
-    }
-
-    // 全サブセットで、同じ単位法線を使用する。
-    plane.normal = plane.normal * (1.0f / normalLength);
 
     // 入力サブセットとの番号対応を維持する。
     result.subsets.resize(inputSubsets.size());
@@ -456,21 +354,14 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceModel(
         return result;
     }
 
-    // 既存の封口生成関数はResultを受け取るため、
-    // 封口だけを保持する一時出力として使用する。
-    Result<VertexType> capResult;
-
+    // 封口専用の出力へ、両側の頂点を直接追加する。
     AppendCapTriangles(
-        capResult,
+        result.caps,
         context.nodes,
         projected,
         capTriangles,
         plane,
         options);
-
-    // 配列の所有権を交換し、頂点の再コピーを避ける。
-    result.caps.negative.swap(capResult.negative);
-    result.caps.positive.swap(capResult.positive);
 
     // -----------------------------------------------------------------
     // 6. 全サブセットの表面と封口を、同じ量だけ分離する
@@ -489,6 +380,207 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceModel(
         options.separation);
 
     // 原表面と封口の準備が、モデル全体について完了した。
+    result.status = Status::Cut;
+
+    return result;
+}
+
+template<class VertexType, class Accept>
+MeshCutter::ModelResult<VertexType> MeshCutter::SliceModel(
+    const std::vector<std::vector<VertexType>>& inputSubsets,
+    Plane plane,
+    Options options,
+    Accept accept)
+{
+    ModelResult<VertexType> result;
+
+    // -----------------------------------------------------------------
+    // 1. 全成分で共通の平面と設定を確認する
+    // -----------------------------------------------------------------
+    const float epsilon = options.epsilon;
+
+    const float normalLength =
+        std::sqrt(Dot(plane.normal, plane.normal));
+
+    const bool validEpsilon =
+        std::isfinite(epsilon) && epsilon > 0.0f;
+
+    const bool validNormal =
+        std::isfinite(normalLength) && normalLength > epsilon;
+
+    const bool validOptions =
+        std::isfinite(options.separation)
+        && std::isfinite(options.uvScale);
+
+    const bool validPlanePoint =
+        std::isfinite(plane.point.x)
+        && std::isfinite(plane.point.y)
+        && std::isfinite(plane.point.z);
+
+    if (!validEpsilon
+        || !validNormal
+        || !validOptions
+        || !validPlanePoint)
+    {
+        result.status = Status::InvalidInput;
+        return result;
+    }
+
+    // 正規化は、モデル全体で一度だけ行う。
+    plane.normal =
+        plane.normal * (1.0f / normalLength);
+
+    // -----------------------------------------------------------------
+    // 2. 材質境界を越えて連結成分を識別する
+    // -----------------------------------------------------------------
+    std::vector<TriangleReference> triangles;
+
+    if (!CollectTriangleReferences(inputSubsets, triangles))
+    {
+        result.status = Status::InvalidInput;
+        return result;
+    }
+
+    std::vector<Vec3> topologyPositions;
+    std::vector<TriangleTopology> topology;
+
+    if (!BuildTriangleTopology(
+        inputSubsets,
+        triangles,
+        epsilon,
+        topologyPositions,
+        topology))
+    {
+        result.status = Status::InvalidInput;
+        return result;
+    }
+
+    std::vector<ConnectedComponent> components;
+
+    if (!BuildConnectedComponents(topology, components))
+    {
+        result.status = Status::OpenOrAmbiguousContour;
+        return result;
+    }
+
+    // 出力も、元の材質サブセット番号との対応を維持する。
+    result.subsets.resize(inputSubsets.size());
+    result.unchangedSubsets.resize(inputSubsets.size());
+
+    bool hasChanges = false;
+
+    // -----------------------------------------------------------------
+    // 3. 各連結成分を独立して処理する
+    // -----------------------------------------------------------------
+    for (const ConnectedComponent& component : components)
+    {
+        // 現在の成分に属する三角形だけを、元の材質番号で集める。
+        std::vector<std::vector<VertexType>> componentInput;
+        componentInput.resize(inputSubsets.size());
+
+        for (std::size_t triangleIndex : component.triangleIndices)
+        {
+            const TriangleReference& reference =
+                triangles[triangleIndex];
+
+            const std::vector<VertexType>& source =
+                inputSubsets[reference.subsetIndex];
+
+            std::vector<VertexType>& destination =
+                componentInput[reference.subsetIndex];
+
+            const auto triangleBegin =
+                source.begin() + reference.vertexStart;
+
+            destination.insert(
+                destination.end(),
+                triangleBegin,
+                triangleBegin + 3);
+        }
+
+        // 交線と両側判定は、この成分の内部だけで共有する。
+        const auto componentResult = SliceComponent(
+            componentInput,
+            plane,
+            options,
+            accept);
+
+        if (componentResult.status == Status::Unchanged)
+        {
+            // ドラッグ範囲外、または切断が成立しない成分。
+            // 分離処理を行わず、元の三角形をそのまま保持する。
+            for (std::size_t subsetIndex = 0;
+                subsetIndex < componentInput.size();
+                ++subsetIndex)
+            {
+                const std::vector<VertexType>& source =
+                    componentInput[subsetIndex];
+
+                std::vector<VertexType>& destination =
+                    result.unchangedSubsets[subsetIndex];
+
+                destination.insert(
+                    destination.end(),
+                    source.begin(),
+                    source.end());
+            }
+
+            continue;
+        }
+
+        if (componentResult.status != Status::Cut)
+        {
+            // 幾何処理に失敗した場合は、部分更新を提出しない。
+            ModelResult<VertexType> stoppedResult;
+            stoppedResult.status = componentResult.status;
+
+            return stoppedResult;
+        }
+
+        hasChanges = true;
+
+        // -----------------------------------------------------------------
+        // 4. 切断済みの原表面を、材質番号ごとにまとめる
+        // -----------------------------------------------------------------
+        for (std::size_t subsetIndex = 0;
+            subsetIndex < componentResult.subsets.size();
+            ++subsetIndex)
+        {
+            const SurfaceResult<VertexType>& source =
+                componentResult.subsets[subsetIndex];
+
+            SurfaceResult<VertexType>& destination =
+                result.subsets[subsetIndex];
+
+            destination.negative.insert(
+                destination.negative.end(),
+                source.negative.begin(),
+                source.negative.end());
+
+            destination.positive.insert(
+                destination.positive.end(),
+                source.positive.begin(),
+                source.positive.end());
+        }
+
+        // 封口も、採用した成分のものだけを追加する。
+        result.caps.negative.insert(
+            result.caps.negative.end(),
+            componentResult.caps.negative.begin(),
+            componentResult.caps.negative.end());
+
+        result.caps.positive.insert(
+            result.caps.positive.end(),
+            componentResult.caps.positive.begin(),
+            componentResult.caps.positive.end());
+    }
+
+    // 全成分が未変更なら、モデル更新と履歴追加を行わない。
+    if (!hasChanges)
+    {
+        return ModelResult<VertexType>{};
+    }
+
     result.status = Status::Cut;
 
     return result;
@@ -729,7 +821,7 @@ VertexType MeshCutter::CreateCapVertex(const VertexType& source,
 }
 
 template<class VertexType>
-void MeshCutter::AppendCapTriangles(Result<VertexType>& result, const std::vector<VertexType>& nodes, 
+void MeshCutter::AppendCapTriangles(SurfaceResult<VertexType>& result, const std::vector<VertexType>& nodes,
     const std::vector<Point2>& projected, const std::vector<TriangleIndices>& capTriangles, 
     const Plane& plane, const Options& options)
 {

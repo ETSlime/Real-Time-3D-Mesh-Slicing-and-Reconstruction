@@ -353,3 +353,293 @@ bool MeshCutter::TriangulateContours(const std::vector<std::vector<std::size_t>>
 
     return true;
 }
+
+
+
+std::size_t MeshCutter::GridCellHash::operator()(const GridCell& cell) const
+{
+    // 符号付き整数のハッシュ値を組み合わせる。
+    std::size_t seed =
+        std::hash<std::int64_t>{}(cell.x);
+
+    const std::size_t hashY =
+        std::hash<std::int64_t>{}(cell.y);
+
+    const std::size_t hashZ =
+        std::hash<std::int64_t>{}(cell.z);
+
+    seed ^= hashY + 0x9e3779b9u
+        + (seed << 6) + (seed >> 2);
+
+    seed ^= hashZ + 0x9e3779b9u
+        + (seed << 6) + (seed >> 2);
+
+    return seed;
+}
+
+bool MeshCutter::TryGetGridCell(Vec3 position, float epsilon, GridCell& cell)
+{
+    if (!std::isfinite(epsilon) || epsilon <= 0.0f)
+        return false;
+
+    // 負座標も正しく分類するため、整数への切り捨てではなくfloorを使う。
+    const double cellX = std::floor(static_cast<double>(position.x) / epsilon);
+    const double cellY = std::floor(static_cast<double>(position.y) / epsilon);
+    const double cellZ = std::floor(static_cast<double>(position.z) / epsilon);
+
+    // int64_tへの変換と、隣接格子への±1を安全に行える範囲に限定する。
+    // 2^60を使用し、整数型の上限には十分な余裕を持たせる。
+    constexpr double coordinateLimit =
+        1152921504606846976.0;
+
+    const bool validCoordinates =
+        std::isfinite(cellX)
+        && std::isfinite(cellY)
+        && std::isfinite(cellZ)
+        && std::fabs(cellX) <= coordinateLimit
+        && std::fabs(cellY) <= coordinateLimit
+        && std::fabs(cellZ) <= coordinateLimit;
+
+    if (!validCoordinates)
+        return false;
+
+    cell.x = static_cast<std::int64_t>(cellX);
+    cell.y = static_cast<std::int64_t>(cellY);
+    cell.z = static_cast<std::int64_t>(cellZ);
+
+    return true;
+}
+
+bool MeshCutter::FindOrAddTopologyVertex(
+    Vec3 position,
+    float epsilon,
+    std::vector<Vec3>& positions,
+    TopologyGrid& grid,
+    std::size_t& vertexIndex)
+{
+    GridCell cell;
+
+    if (!TryGetGridCell(position, epsilon, cell))
+        return false;
+
+    const double epsilonSquared = static_cast<double>(epsilon) * epsilon;
+
+    // 許容誤差内の点が隣の格子に入る場合もあるため、
+    // 自分の格子を含む27個の格子を調べる。
+    for (int offsetX = -1; offsetX <= 1; ++offsetX)
+    {
+        for (int offsetY = -1; offsetY <= 1; ++offsetY)
+        {
+            for (int offsetZ = -1; offsetZ <= 1; ++offsetZ)
+            {
+                const GridCell neighbor
+                {
+                    cell.x + offsetX,
+                    cell.y + offsetY,
+                    cell.z + offsetZ
+                };
+
+                const auto found = grid.find(neighbor);
+
+                if (found == grid.end())
+                    continue;
+
+                for (std::size_t candidateIndex : found->second)
+                {
+                    const Vec3& candidate = positions[candidateIndex];
+
+                    // 距離計算はdoubleで行い、
+                    // floatの二乗による範囲不足を避ける。
+                    const double dx = static_cast<double>(position.x) - candidate.x;
+                    const double dy = static_cast<double>(position.y) - candidate.y;
+                    const double dz = static_cast<double>(position.z) - candidate.z;
+
+                    const double distanceSquared =
+                        dx * dx + dy * dy + dz * dz;
+
+                    if (distanceSquared <= epsilonSquared)
+                    {
+                        vertexIndex = candidateIndex;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 近い代表位置がなければ、新しい番号を登録する。
+    vertexIndex = positions.size();
+
+    positions.push_back(position);
+    grid[cell].push_back(vertexIndex);
+
+    return true;
+}
+
+// 共有辺から三角形の接続関係を作り、連結成分へ分ける。
+// 位置番号が重複する三角形や、3面以上が共有する辺は拒否する。
+// 開いた境界の存在だけでは、この段階では拒否しない。
+bool MeshCutter::BuildConnectedComponents(
+    const std::vector<TriangleTopology>& topology,
+    std::vector<ConnectedComponent>& components)
+{
+    components.clear();
+
+    const std::size_t triangleCount = topology.size();
+
+    // -----------------------------------------------------------------
+    // 1. 各三角形から、3本の無向辺を作成する
+    // -----------------------------------------------------------------
+    std::vector<TopologyEdge> edges;
+    edges.reserve(triangleCount * 3);
+
+    for (std::size_t triangleIndex = 0;
+        triangleIndex < triangleCount;
+        ++triangleIndex)
+    {
+        const TriangleTopology& triangle =
+            topology[triangleIndex];
+
+        const std::size_t indexA = triangle.vertexIndices[0];
+        const std::size_t indexB = triangle.vertexIndices[1];
+        const std::size_t indexC = triangle.vertexIndices[2];
+
+        // 許容誤差による位置統合後も、3頂点が異なる必要がある。
+        // 潰れた三角形を通して、別の面を接続しない。
+        if (indexA == indexB
+            || indexB == indexC
+            || indexC == indexA)
+        {
+            return false;
+        }
+
+        for (std::size_t corner = 0; corner < 3; ++corner)
+        {
+            const std::size_t nextCorner = (corner + 1) % 3;
+
+            const std::size_t current =
+                triangle.vertexIndices[corner];
+
+            const std::size_t next =
+                triangle.vertexIndices[nextCorner];
+
+            TopologyEdge edge{};
+
+            // 向きに関係なく、同じ辺を同じ端点順で記録する。
+            if (current < next)
+            {
+                edge.vertexA = current;
+                edge.vertexB = next;
+            }
+            else
+            {
+                edge.vertexA = next;
+                edge.vertexB = current;
+            }
+
+            edge.triangleIndex = triangleIndex;
+
+            edges.push_back(edge);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // 2. 同じ幾何辺の記録を隣り合わせにする
+    // -----------------------------------------------------------------
+    std::sort(edges.begin(), edges.end());
+
+    // 各三角形に、辺を共有する隣接三角形を記録する。
+    std::vector<std::vector<std::size_t>> adjacency;
+    adjacency.resize(triangleCount);
+
+    std::size_t edgeBegin = 0;
+
+    while (edgeBegin < edges.size())
+    {
+        std::size_t edgeEnd = edgeBegin + 1;
+
+        // 同じ端点を持つ辺の範囲を取得する。
+        while (edgeEnd < edges.size()
+            && edges[edgeEnd].vertexA == edges[edgeBegin].vertexA
+            && edges[edgeEnd].vertexB == edges[edgeBegin].vertexB)
+        {
+            ++edgeEnd;
+        }
+
+        const std::size_t incidentCount =
+            edgeEnd - edgeBegin;
+
+        if (incidentCount > 2)
+        {
+            // 3面以上が共有する辺は、現在の入力条件では扱わない。
+            return false;
+        }
+
+        if (incidentCount == 2)
+        {
+            const std::size_t triangleA =
+                edges[edgeBegin].triangleIndex;
+
+            const std::size_t triangleB =
+                edges[edgeBegin + 1].triangleIndex;
+
+            // 共有辺を持つ三角形を、双方向に接続する。
+            adjacency[triangleA].push_back(triangleB);
+            adjacency[triangleB].push_back(triangleA);
+        }
+
+        // incidentCountが1なら境界辺なので、接続先を追加しない。
+        edgeBegin = edgeEnd;
+    }
+
+    // -----------------------------------------------------------------
+    // 3. 三角形の接続関係をたどり、独立した成分へ分ける
+    // -----------------------------------------------------------------
+    std::vector<bool> visited(triangleCount, false);
+
+    std::stack<std::size_t> pendingTriangles;
+
+    for (std::size_t startIndex = 0;
+        startIndex < triangleCount;
+        ++startIndex)
+    {
+        if (visited[startIndex])
+        {
+            continue;
+        }
+
+        // 未訪問の三角形から、新しい連結成分を開始する。
+        components.emplace_back();
+
+        ConnectedComponent& component =
+            components.back();
+
+        visited[startIndex] = true;
+        pendingTriangles.push(startIndex);
+
+        while (!pendingTriangles.empty())
+        {
+            const std::size_t currentIndex =
+                pendingTriangles.top();
+
+            pendingTriangles.pop();
+
+            component.triangleIndices.push_back(currentIndex);
+
+            for (std::size_t neighborIndex : adjacency[currentIndex])
+            {
+                if (visited[neighborIndex])
+                {
+                    continue;
+                }
+
+                // スタックへ追加した時点で訪問済みにし、
+                // 同じ三角形の重複登録を防ぐ。
+                visited[neighborIndex] = true;
+                pendingTriangles.push(neighborIndex);
+            }
+        }
+    }
+
+    return true;
+}
