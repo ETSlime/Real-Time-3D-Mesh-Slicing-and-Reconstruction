@@ -11,7 +11,7 @@ Drag across a 3D model to split its triangle mesh, reconstruct section contours,
 - **Interactive plane slicing:** a mouse stroke defines a plane through the perspective camera.
 - **Surface reconstruction:** half-space clipping generates both halves and interpolates positions, normals, vertex colors, and UVs.
 - **Contour-based caps:** shared intersection nodes and adjacency recover closed contours; ear clipping supports simple concave contours and separate non-nested loops.
-- **Repeated cuts:** generated surfaces and caps become input for subsequent cuts.
+- **Materials and pieces:** contours span material groups within each piece. Persistent IDs support targeted piece cuts while uncut pieces stay in place; generated surfaces and caps can be cut again.
 - **Undo / redo:** two snapshot stacks restore geometry and materials; a successful new cut after undo clears the redo branch.
 - **OBJ drag and drop:** successful loading replaces the model, resets its presentation and camera, and clears editing history. Failed loading retains the current model and history.
 - **Inspection:** F1 toggles solid/wireframe; F3 toggles the cutting-plane preview. On-screen control hints appear in both Debug and Release.
@@ -31,7 +31,7 @@ Drag across a 3D model to split its triangle mesh, reconstruct section contours,
 | Arrow keys | Move the model relative to camera heading |
 | Esc | Exit |
 
-Additional controls: camera orbit, height, and distance controls are available in both Debug and Release.
+Camera and presentation controls (Debug and Release):
 
 | Input | Action |
 |---|---|
@@ -80,13 +80,11 @@ Topics include screen rays, plane transforms, clipping, attribute interpolation,
 
 ## Scope and limitations
 
-- Cutting uses a plane, rather than a curved blade or arbitrary solid Boolean operation.
-- Caps support simple concave contours and multiple separate, non-nested contours. Holes are unsupported.
-- Slicing runs per subset. Material groups that divide a closed object into open patches can prevent contour closure.
-- A triangle with three distinct vertices classified on the cutting plane rejects the attempted update, even when other regions lie on both sides. Existing-edge cuts can succeed when both-side and contour conditions hold.
-- Open/branching contours, nested contours, and failed triangulation are rejected without installing partial geometry.
-- The current 16-bit model representation limits replacement geometry to 65,535 expanded vertices.
-- History stores complete CPU geometry in memory, with no count/memory cap or persistence. Textures are shared through references; per-step GPU mesh buffers are not retained.
-- Cutting rebuilds geometry; it does not generate collision shapes or rigid-body simulation.
+- Intended for closed, consistently outward-wound, non-self-intersecting manifold meshes; not a general mesh repair tool.
+- Plane cuts support simple concave sections and separate non-nested loops. Holes and arbitrary solid Boolean operations are unsupported.
+- Tangency may leave geometry unchanged. Full-face coplanarity during a split, ambiguous connectivity, or unsafe triangulation retains the current valid model.
+- Vertices use float storage. Finite tolerances and at most two local refinement steps do not guarantee arbitrary scales, narrow features, or unlimited cuts. Required planar repair may also be refused when UV/color features would be altered beyond tolerance.
+- The application accepts at most 65,535 expanded vertices. History stores full CPU geometry and piece IDs without a count/memory budget or persistence; texture references are shared.
+- IDs keep identified pieces independent; overlapping pieces are not unioned, and collision or rigid-body simulation is not provided.
 
-Suggested demo: cube cuts → repeated undo/redo → a new cut after undo → concave L-prism section → F1/F3 inspection → OBJ reload.
+Suggested demo: cube cut → cross-material cap → concave L-prism → cut only the middle piece → undo/redo → F1/F3 inspection → OBJ reload.

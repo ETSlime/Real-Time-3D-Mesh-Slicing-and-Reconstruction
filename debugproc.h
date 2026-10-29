@@ -5,13 +5,13 @@
 //
 //=============================================================================
 #pragma once
-
-
 #include "main.h"
-
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 //*****************************************************************************
 // プロトタイプ宣言
 //*****************************************************************************
 void DrawDebugProc(void);
 
-void PrintDebugProc(char *fmt,...);
+void PrintDebugProc(const char* fmt, ...);

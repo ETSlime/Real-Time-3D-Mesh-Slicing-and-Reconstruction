@@ -11,6 +11,8 @@
 #include "MeshCutter.h"
 #include <memory>
 #include <limits>
+#include <cstdint>
+#include <vector>
 
 //*****************************************************************************
 // マクロ定義
@@ -69,6 +71,12 @@ public:
 		// 切断した場合だけ存在する、正側の頂点配列。
         std::unique_ptr<SimpleArray<VERTEX_3D>> additionalVertices;
 
+		// 基本出力の各三角形に対応する破片番号。
+		std::vector<std::uint64_t> primaryPieceIds;
+
+		// 追加出力の各三角形に対応する破片番号。
+		std::vector<std::uint64_t> additionalPieceIds;
+
         // 更新後のサブセットへ引き継ぐマテリアル。
         MODEL_MATERIAL material;
     };
@@ -79,8 +87,11 @@ public:
     // 切断計算の頂点配列を、既存モデル更新用の配列へコピーする。
 	static std::unique_ptr<SimpleArray<VERTEX_3D>> CopyVertices(const std::vector<VERTEX_3D>& vertices);
 
-	// 更新用配列からモデルを再構築し、準備完了後に旧モデルと置き換える
-	static HRESULT TryUpdateModel(DX11_MODEL* model);
+	// 頂点・材質・破片番号をまとめて新モデルへ反映する。
+	static HRESULT TryUpdateModel(
+		DX11_MODEL* model,
+		const std::vector<std::uint64_t>& trianglePieceIds,
+		std::uint64_t nextPieceId);
 };
 
 //*****************************************************************************
@@ -106,3 +117,5 @@ bool ReplacePlayerModel(const char* FileName);
 void CancelPlayerCutGesture(void);
 // 取り消しとやり直しのショートカットを処理する。
 static bool UpdateModelHistoryShortcuts(void);
+// 書式付きメッセージを整形して保存する。
+static void SetOperationFailureMessage(const char* format, ...);

@@ -422,8 +422,26 @@ HRESULT Init(HINSTANCE hInstance, HWND hWnd, BOOL bWindow)
 
 	InitEnemy();
 
+
+	// 法線による陰影を確認するため、平行光源を設定する。
+	LIGHT light{};
+
+	const XMVECTOR direction = XMVector3Normalize(XMVectorSet(0.5f, -1.0f, 0.7f, 0.0f));
+
+	XMStoreFloat3(&light.Direction, direction);
+
+	light.Type = LIGHT_TYPE_DIRECTIONAL;
+	light.Enable = TRUE;
+
+	// 面の向きによる明暗差を付ける。
+	light.Diffuse = XMFLOAT4(0.85f, 0.85f, 0.85f, 1.0f);
+
+	// 光が当たらない面も確認できるよう、弱い環境光を加える。
+	light.Ambient = XMFLOAT4(0.15f, 0.15f, 0.15f, 1.0f);
+
 	// ライトを有効化
-	SetLightEnable(FALSE);
+	SetLight(0, &light);
+	SetLightEnable(TRUE);
 
 	// 背面ポリゴンをカリング
 	SetCullingMode(CULL_MODE_BACK);

@@ -29,11 +29,11 @@ The pipeline is:
 
 1. Construct a world-space plane from the screen stroke.
 2. Convert the plane to model-local space.
-3. Resolve indices into expanded triangles for each subset.
-4. Clip the original surface and collect section segments.
+3. Expand subset triangles and organize them by persistent piece IDs.
+4. Clip across materials within each piece, sharing intersections and collecting section segments.
 5. Merge intersection nodes, recover closed contours, and project them to 2D.
 6. Reject unsupported nested contours and triangulate caps with ear clipping.
-7. Generate cap attributes and offset both halves.
+7. Generate cap attributes, offset only split pieces, validate final connectivity, and assign new IDs.
 8. Stage every subset, capture the pre-cut state, prepare CPU/GPU resources, and commit geometry and history.
 
 ## 3. Screen input and the cutting plane
@@ -86,9 +86,9 @@ Strokes shorter than two pixels are ignored. The operation also stops when the s
 
 The mathematical plane is infinite, so `IsInsideStroke()` also evaluates section-segment endpoints. Each point is transformed by world, view, and projection matrices, divided by homogeneous W once, and mapped back to screen coordinates. It must lie in the axis-aligned rectangle formed by the stroke endpoints, expanded by a two-pixel margin.
 
-This is not an exact point-to-stroke-segment distance test. Points with $w\leq10^{-5}$ are rejected. If a section endpoint fails acceptance, the current subset returns `Unchanged`; other subsets may still produce independent cuts.
+This is not an exact point-to-stroke-segment distance test. Points with $w\leq10^{-5}$ are rejected. If an actual section endpoint fails acceptance, the current piece returns `Unchanged`; other pieces may still be cut independently. Acceptance applies to the piece-wide section, not separately to material groups.
 
-`Slice()` receives this acceptance rule as a callback. An overload that accepts every point is available when no screen restriction is required.
+`SliceModel()` receives this acceptance rule as a callback. When no screen restriction is required, the caller can pass a callback that always returns true.
 
 ## 4. Converting the plane to model-local space
 
@@ -116,31 +116,33 @@ $$
 
 This preserves the normal's perpendicularity under non-uniform scaling. The world transform is assumed to be invertible; zero scale is not a supported operation.
 
-## 5. Triangle input and signed distance
+## 5. Triangle input, pieces, and signed distance
 
-`CutMeshes()` resolves vertices through `IndexArray`, producing three expanded vertices per triangle. It does not assume that an index-buffer position is itself a vertex index.
+`CutMeshes()` resolves `IndexArray` into expanded triangles and passes all material subsets to `SliceModel()`. A subset is a rendering-material group, not a closed solid. One piece can span several subsets.
 
-For a unit plane normal:
+For an initial model, `InitializePieceIds()` identifies geometric connectivity across materials. Subsequent operations group triangles by their persistent piece IDs instead of reconnecting the entire scene by position. Separate pieces therefore retain their identities after displacement makes them overlap. Cutting only the middle piece leaves the others' positions, attributes, and IDs intact.
+
+Shared position IDs are built within each piece. For the unit cutting-plane normal:
 
 $$
 d=(P-Q)\cdot N
 $$
 
-Positive and negative values identify the two half-spaces. The default positional tolerance is $\epsilon=10^{-4}$. Distances satisfying $|d|\leq\epsilon$ are set to zero for classification.
+Positive and negative distances identify the two sides. This normal belongs to the cutting plane, not the mesh's lighting normals; every subset uses the same plane. The default positional tolerance is $\epsilon=10^{-4}$ in model-local units. Distances are computed once per shared position in double precision. When $|d|\leq\epsilon$, classification becomes zero and the shared output position is projected onto the plane. Input arrays remain unchanged.
 
-This changes the classification value, not the vertex position: near-plane vertices are not explicitly projected onto the plane. Tolerances are measured in local-space units and depend on asset scale. If the input has no vertices on both strict sides, or no section nodes, the operation returns `Unchanged`.
+A piece without vertices strictly on both sides is not cut. The tolerance depends on asset scale and is not a universal precision guarantee.
 
 ## 6. Half-space clipping and attributes
 
-### 6.1 Two Clip calls
+### 6.1 Retaining each half-space
 
-One `Clip()` invocation retains one half-space:
+`ClipSubset()` processes a material group's triangles. `AppendClippedTriangle()` generates each side, retaining vertices satisfying:
 
 $$
 d\times side\geq0
 $$
 
-`side=+1` retains the positive side; `side=-1` retains the negative side. On-plane vertices belong to both boundaries. Edges A→B are visited in the original triangle order:
+`side=+1` keeps the positive side; `side=-1` keeps the negative side. On-plane vertices belong to both boundaries. Edges A→B follow the original triangle order. For ordinary endpoints strictly away from the plane:
 
 | A is inside the retained half-space | B is inside | Vertices appended for this edge |
 |---|---|---|
@@ -149,67 +151,48 @@ $$
 | No | Yes | Intersection |
 | No | No | None |
 
-Each edge handles its starting vertex. The resulting convex polygon is triangulated as a fan $(P_0,P_i,P_{i+1})$.
+An original on-plane vertex is appended when it is the edge's starting vertex. New interior intersections are generated only for strictly opposite distance signs, avoiding repeated endpoint interpolation. Both sides reuse the precomputed intersections.
 
-In a typical crossing, the side with one original vertex becomes a triangle, and the opposite side becomes a quadrilateral split into two triangles. Two calls produce both halves. A triangle not crossed by the plane is copied into its retained side.
+The resulting polygon preserves boundary order and is convex, so it can be triangulated as a fan $(P_0,P_i,P_{i+1})$. A typical crossing yields a triangle on the single-vertex side and a quadrilateral split into two triangles on the other. An un-crossed triangle belongs to its retained side. Fan triangulation handles clipped original surfaces; potentially concave caps use ear clipping later.
 
-Fan triangulation is valid here because clipping a triangle against a half-space produces a convex region. Section caps can be concave and use ear clipping instead.
+### 6.2 Interpolation and shared positions
 
-### 6.2 Intersection parameter
-
-For endpoint distances $d_A,d_B$:
+For endpoint distances $d_A,d_B$, distance along the edge is $d(t)=d_A+t(d_B-d_A)$. Setting it to zero gives:
 
 $$
-t=\frac{d_A}{d_A-d_B}
+t=\frac{d_A}{d_A-d_B},\qquad P=A+t(B-A)
 $$
 
-This follows from $d(t)=d_A+t(d_B-d_A)=0$. The intersection is:
+The same parameter interpolates position, UVs, RGBA color, and normals; interpolated normals are normalized. Parameters 0 and 1 return the corresponding original vertex directly, avoiding a rounded interpolation result that differs from the endpoint.
 
-$$
-P=A+t(B-A)
-$$
-
-The same parameter interpolates position, UVs, RGBA vertex color, and normals. Interpolated normals are normalized. There is no second length-ratio calculation. Additional vertex fields that are not explicitly handled inherit endpoint A's values; this does not imply support for tangent or skinning interpolation.
+`InterpolateSharedEdge()` uses canonical endpoint order and double precision for the position, caching it by shared edge IDs. Surfaces and caps use the same representative position. Normals, UVs, and colors are still interpolated from each triangle's own rendering vertices, preserving material and attribute seams. Unhandled extra fields inherit endpoint A; tangent or skinning interpolation is not implied.
 
 ### 6.3 Triangle registration
 
-`Triangle()` preserves the supplied winding and registers only faces satisfying:
+`Triangle()` preserves supplied winding and computes the cross product in double precision, filtering actual zero-area faces. It does not independently discard a valid small face merely because its area falls below the squared positional tolerance, which could leave a gap. Nonzero area alone does not establish validity; final connectivity is also checked.
 
-$$
-\left\|(B-A)\times(C-A)\right\|^2>\epsilon^4
-$$
+## 7. Section segments and shared topology
 
-The cross-product magnitude is twice the area, so the threshold corresponds to area greater than $\epsilon^2/2$. Degenerate and very small faces are filtered, but this is not general mesh repair or a guarantee of watertightness. On-plane cases can produce duplicate polygon positions; their zero-area fan triangles are filtered here.
+Surface triangles and cap contours are separate outputs sharing intersection results. The triangle-local `hits` in `ClipSubset()` stores cutting-node IDs, not cap triangles or a complete loop. `AppendUniqueIndex()` deduplicates node IDs.
 
-## 7. Section segments and deduplication
+| Level | Identity and purpose |
+|---|---|
+| Original shared vertex | Shared position ID gives adjacent triangles consistent classification |
+| Edge intersection | Undirected endpoint-ID pair caches the shared intersection position |
+| Cutting node | A representative position within tolerance is used by both surface and cap |
+| Section segment | Undirected node pair accumulates which sides its incident faces occupy |
 
-Surface clipping and cap-boundary collection have separate outputs. `Clip()` writes surface triangles, while a triangle-local `hits` array collects section points. Some intersection and interpolation work is currently repeated between these stages.
+### 7.1 Cuts versus same-side contact
 
-Original on-plane vertices are registered directly. Strictly opposite endpoint signs produce an interpolated edge intersection. Two distinct hits contribute one section segment.
+A segment crossing a triangle interior directly contributes both side flags. When the plane follows an existing edge, a single triangle contributes only one side. After processing all material groups in the piece, flags for that edge are combined. Only edges with both positive and negative incidence enter contour adjacency. An edge whose neighboring faces lie on the same side is contact, not a cut boundary. An isolated point-contact node need not form a loop.
 
-| Operation | Scope | Purpose |
-|---|---|---|
-| `AddUniqueIntersection()` | One triangle | Merge hits within positional tolerance |
-| `FindOrAddCutNode()` | The current subset | Assign the same node index to shared section points |
-| Connection deduplication | A node pair | Avoid registering the same undirected segment twice |
-
-Equal positions with different node indices would leave segments disconnected. Node merging is therefore part of contour-topology reconstruction. It currently uses linear search, keeps the first node's attributes, and does not average positions.
-
-Zero or one hit does not form a segment; two hits do. Three distinct hits are treated as a coplanar/ambiguous case and reject the operation. Positional tolerance affects these classifications.
-
-### 7.1 Existing-edge cuts and coplanar triangles
-
-Two hits alone do not establish a split. When the plane passes through an existing edge, a triangle may produce two hits while its third vertex lies entirely on one side. That edge can still contribute a section segment. If the complete input contains vertices strictly on both sides and the segments form supported closed contours, a cut can follow existing mesh edges without crossing triangle interiors. Merely touching an exterior surface without vertices on both sides does not commit a cut.
-
-A nondegenerate triangle with three distinct vertices classified on the plane produces three hits and returns `OpenOrAmbiguousContour`. This is a retained limitation: even if other regions extend to both sides, the coplanar triangle cancels the attempted model update. The implementation does not resolve which side should own such a face or whether to retain or replace it.
-
-`Clip()` may already have generated temporary surfaces before rejection. They are not committed. Rejecting a coplanar triangle does not imply that clipping produced no output; it means that the attempted operation is not accepted.
+Existing-edge cuts can therefore succeed, while exterior tangency can return `Unchanged`. Entire coplanar triangles during a genuine split, or otherwise ambiguous degenerate connectivity, can still reject the update. Temporary output is adopted only after validation.
 
 ## 8. Adjacency and closed contours
 
 `nodes[i]` stores a section vertex; `adjacency[i]` stores connected node indices. Each segment AB is registered in both directions.
 
-`BuildClosedContours()` requires exactly two neighbors per node. It starts at an unvisited node and follows the neighbor that is not the previous node.
+`BuildClosedContours()` ignores zero-degree contact nodes outside actual section segments and requires exactly two neighbors per participating node. It starts at an unvisited node and follows the neighbor that is not the previous node.
 
 - Returning to the start completes a contour.
 - Reaching another visited node before closing fails.
@@ -220,7 +203,7 @@ Each traversal registers a new node or terminates at a visited node, so it canno
 
 ## 9. Planar coordinates and nesting
 
-A reference axis R is selected to avoid near-parallel alignment with the unit normal: X when $|N_x|<0.9$, otherwise Y.
+Projection and orientation use double-precision intermediates. A reference axis R is selected to avoid near-parallel alignment with the unit normal: X when $|N_x|<0.9$, otherwise Y.
 
 $$
 U=\mathrm{normalize}(R\times N),\qquad V=N\times U
@@ -242,41 +225,35 @@ This assumes simple contours that neither intersect nor touch each other. It is 
 
 ### 10.1 Counterclockwise order
 
-Twice the signed polygon area is:
+Twice the signed area is:
 
 $$
 A_2=\sum_i(x_i y_{i+1}-y_i x_{i+1})
 $$
 
-A negative value reverses the contour. Adjacency traversal can choose either initial direction, so winding is normalized before ear clipping.
+A negative value reverses the contour. The implementation accumulates relative to the first contour point to reduce cancellation at larger coordinates.
 
-### 10.2 Finding an ear
+### 10.2 Choosing an ear
 
 For consecutive A, B, C:
 
 $$
-Orient(A,B,C)=(B_x-A_x)(C_y-A_y)-(B_y-A_y)(C_x-A_x)
+\mathrm{Orient}(A,B,C)=(B_x-A_x)(C_y-A_y)-(B_y-A_y)(C_x-A_x)
 $$
 
-A positive value is a convex corner in a counterclockwise contour. Candidates must satisfy $Orient>\epsilon^2$.
+A positive value identifies a convex corner in counterclockwise order. An ear must have a reliably positive orientation and contain no other contour vertex; otherwise removing it could cross the boundary or cover another region. Among valid ears, the algorithm favors greater minimum triangle altitude to reduce thin faces. It saves ABC, removes only B from the working contour, and continues.
 
-Every other contour vertex P is tested against:
+Orientation and point-in-triangle tests use double precision and determinant-dependent error bounds, rather than treating squared positional tolerance as a universal orientation threshold. The contour is copied; original nodes remain available. A successful triangulation of an n-node simple boundary yields n−2 triangles. Failure to find valid ears or finish triangulation returns `TriangulationFailed`.
 
-$$
-Orient(A,B,P)\geq-\epsilon^2
-$$
-$$
-Orient(B,C,P)\geq-\epsilon^2
-$$
-$$
-Orient(C,A,P)\geq-\epsilon^2
-$$
+`TriangulateContours()` outputs `TriangleIndices`, triples of node IDs, separately from cap-vertex generation.
 
-If all three hold, P is inside or within the tolerated boundary of the candidate triangle, so the candidate is rejected. Otherwise ABC is saved and only B is removed from the working contour. The process repeats until the final three nodes remain and are registered.
+### 10.3 Boundary preservation and numerical stability
 
-The working contour is a copy; original nodes remain intact. Successful triangulation of an n-node simple contour produces n−2 triangles. A pass with no ear, or an invalid final triangle area, returns `TriangulationFailed`.
+Nearly collinear boundary chains may be simplified temporarily to improve ear clipping. Omitted nodes are then restored into the triangulation so that surface and cap boundary segmentation agrees. Bounded internal-edge improvement preserves the boundary rather than hiding connectivity errors by deleting short edges.
 
-`TriangulateContours()` returns `TriangleIndices`: triples of node indices. It does not generate side-specific vertex attributes.
+After separation is stored in float coordinates, cap facing is checked and, when needed, retriangulated using the actual displaced positions. Existing planar surfaces are rebuilt only when reference facing, planarity, uniform normals, approximately affine UVs, and uniform vertex color permit it, protecting meaningful attribute seams.
+
+On `OpenOrAmbiguousContour` or `TriangulationFailed`, the piece may retry the same input and plane with positional tolerance halved at most twice. Refinement is bounded by float coordinate spacing and a distance-arithmetic error floor. The cutting plane is never shifted; `Unchanged`, invalid input, and holes do not trigger this retry.
 
 ## 11. Caps, normals, and UVs
 
@@ -295,9 +272,9 @@ $$
 (UV_x,UV_y)=(p_u,p_v)\times uvScale
 $$
 
-The default is `uvScale=0.1`. Coordinates are not normalized to fit the cap into [0,1]; material and sampler behavior determine the appearance outside that interval. Caps reuse the subset material, with no dedicated cap material generated.
+The default is `uvScale=0.1`. Coordinates are not normalized to fit the cap into [0,1]; material and sampler behavior determine the appearance outside that interval. Caps are output separately and assigned an existing material by the application. No dedicated cap material is generated, and a cross-material cap need not be partitioned along the original material boundaries.
 
-Finally, surface and cap vertices are offset together:
+Surface and cap vertices of an actually split piece are offset together; uncut pieces stay in place:
 
 $$
 P_-=P-N\times separation,\qquad P_+=P+N\times separation
@@ -305,33 +282,29 @@ $$
 
 The default is 1.5 local units per side, producing a three-unit gap between originally coincident cut faces. The completed result returns `Status::Cut`. Subsequent cuts operate directly on the generated, offset vertices.
 
-## 12. Subset staging and model updates
+## 12. Piece results, materials, and model updates
 
-Slicing is evaluated per subset. `PendingSubset::primaryVertices` always exists: it contains the negative half after a cut, or original vertices when unchanged. `additionalVertices` contains the positive half only after a cut. These names describe staging roles rather than universal geometric sides.
+`SliceModel()` reconstructs contours across subsets within each persistent piece. `ModelResult::subsets` stores cut surfaces under their original material groups, `caps` stores caps separately, and `unchangedSubsets` preserves uncut pieces with per-triangle IDs. An individual material group need not have a closed contour; the related faces of the whole piece provide it.
 
-All subsets are staged locally:
+- `Cut`: adopt new surfaces and caps; separate only pieces actually split.
+- Piece `Unchanged`: retain original geometry, attributes, and IDs without separation.
+- Any other piece failure: cancel the entire model update rather than commit partial success.
+- No changes: skip resource reconstruction and history insertion.
 
-- `Cut`: retain both halves.
-- `Unchanged`: retain the original subset so it survives whole-model reconstruction.
-- Other algorithm failures: cancel the entire model update.
-- No changed subset: skip resource reconstruction.
+At final displaced coordinates, each undirected edge in generated geometry must have exactly two incident faces. This requirement is not relaxed to accept a failed result. New piece IDs are staged with geometry and installed only on successful model replacement.
 
-After capacity checks, final arrays are handed to the update queues. `TryUpdateModel()` counts nonempty arrays, creates expanded vertex data, sequential indices, subset/material records, and separate replacement vertex/index buffers. The old model is released only after preparation succeeds.
-
-Indices become 0, 1, 2, and so on. The current 16-bit representation limits replacement geometry to 65,535 expanded vertices; repeated cuts are not unbounded.
-
-### Result status
+`CutMeshes()` preserves original surface/material associations. Caps reuse an existing material, without creating a dedicated cap material. After capacity checks, `TryUpdateModel()` creates expanded vertices, sequential indices, subset/material records, and independent GPU buffers. Only full preparation releases the old model. The current 16-bit representation accepts at most 65,535 expanded vertices.
 
 | Status | Meaning |
 |---|---|
-| `Unchanged` | Do not apply the attempted cut; retain the subset |
-| `Cut` | Both surfaces and caps have been generated |
-| `InvalidInput` | Cutting input or settings violate the current requirements |
-| `OpenOrAmbiguousContour` | Open, branching, coplanar, or otherwise ambiguous section connectivity |
-| `UnsupportedHole` | Unsupported nested contours were detected |
-| `TriangulationFailed` | Ear clipping could not finish, or the final triangle failed the area condition |
+| `Unchanged` | Retain the original piece or model |
+| `Cut` | New surfaces, caps, and piece IDs are prepared |
+| `InvalidInput` | Input layout, IDs, or settings violate requirements |
+| `OpenOrAmbiguousContour` | Open, branching, coplanar-ambiguous, or invalid generated connectivity |
+| `UnsupportedHole` | Unsupported nested contours |
+| `TriangulationFailed` | Contour triangulation or required safe retriangulation could not finish |
 
-A failure result may contain partial temporary vertices, but they are not committed as a complete mesh.
+These are algorithm results. Vertex-capacity and GPU-allocation failures occur during application submission. Failure installs no temporary geometry and creates no successful-cut history entry.
 
 ## 13. Ownership and failure handling
 
@@ -353,7 +326,7 @@ The path handles existing algorithm failure results, invalid arguments/capacity,
 
 ### 14.1 Snapshot contents
 
-`ModelSnapshot` stores independent vertex, index, and subset/material arrays. Positions, normals, colors, UVs, previously generated caps, and baked separation offsets are part of the saved model state. GPU buffers, the camera, presentation transforms, fill mode, and the plane-visibility setting are not captured.
+`ModelSnapshot` stores independent vertex, index, and subset/material arrays. Positions, normals, colors, UVs, previously generated caps, and baked separation offsets are part of the saved model state. Per-triangle `TrianglePieceIds` and `NextPieceId` are also saved so undo/redo restores piece identity. GPU buffers, the camera, presentation transforms, fill mode, and the plane-visibility setting are not captured.
 
 `Capture()` deep-copies CPU arrays without duplicating texture pixels. It calls `AddRef()` for each saved subset texture and matches those references with `Release()` in the snapshot destructor. Snapshots cannot be copied and are owned through `unique_ptr<ModelSnapshot>`.
 
@@ -408,7 +381,7 @@ F3 toggles the cutting-plane preview. Drawing requires successfully initialized 
 
 The preview represents the most recently attempted plane and may update even when slicing is rejected. Model reset and successful undo/redo invalidate the old preview while preserving its visibility setting. The selected fill mode also affects the preview.
 
-`PrintDebugProc()` registers per-frame control text; `DrawDebugProc()` calls `DebugTextOut()` to render it. F1/F3 settings and history shortcuts are displayed in both Debug and Release. Text support uses `DEBUG_DISP_TEXTOUT`, a BGRA back buffer, and a GDI-compatible swap chain. The D3D debug layer remains Debug-only. Camera orbit, height, distance controls, and R reset are enabled in both Debug and Release. 
+`PrintDebugProc()` registers per-frame control text; `DrawDebugProc()` calls `DebugTextOut()` to render it. F1/F3 settings and history shortcuts are displayed in both Debug and Release. Text support uses `DEBUG_DISP_TEXTOUT`, a BGRA back buffer, and a GDI-compatible swap chain. The D3D debug layer remains Debug-only. Camera controls and R reset are also available in both Debug and Release.
 
 | Input | Action |
 |---|---|
@@ -427,17 +400,21 @@ The preview represents the most recently attempted plane and may update even whe
 
 Camera orbit uses A/D and upward movement uses W, leaving Z/Y for history shortcuts. The camera therefore needs no Ctrl-conflict check.
 
-## 17. Environment and limitations
+## 17. Environment, cost, and limitations
 
-Build the Windows Visual Studio project with its DirectX 11, DirectXMath, input, and D3DX11 dependencies available. Use the current C++17 configuration and ensure shader/asset relative paths match the working directory. Triangulated OBJ assets with normals, UVs, explicit material groups, and valid MTL/texture references are recommended.
+Build the Windows Visual Studio project with C++17 and its DirectX 11, DirectXMath, input, and D3DX11 dependencies. Shader/asset paths must match the working directory. Use triangulated OBJ assets with normals, UVs, and valid MTL/texture references.
 
-- Every subset being capped must provide a closed section graph. Material groups that split a closed object into open surface patches can cause rejection.
-- Simple concave contours are supported; holes, self-intersection handling, and general mesh repair are not.
-- A coplanar triangle with three distinct on-plane vertices rejects the entire update, even if other regions lie on both sides. Very small geometry and tolerance-induced merging may also cause rejection. Rejection is not mesh repair.
-- History stores complete CPU geometry, with no entry-count/memory-budget limit or persistence.
-- Wireframe displays triangle edges, not only the object's silhouette.
-- Curved blades, arbitrary solid Boolean operations, collision generation, and rigid-body simulation are outside the scope.
-- Node merging uses linear search. Repeated ear-candidate searches with scans of other vertices can take cubic time in the worst case. No large-mesh performance optimization claim is made.
-- The 16-bit capacity, asset scale, and numerical tolerances limit the depth and stability of repeated cuts.
+| Area | Current scope |
+|---|---|
+| Input geometry | Closed, consistently outward-wound, non-self-intersecting manifolds are intended; this is not general mesh repair or proof of all self-intersection detection |
+| Sections | Simple concave contours and separate non-nested loops; no holes, curved blades, or arbitrary solid Boolean operations |
+| Degeneracy and scale | Tangency may be unchanged; full-face coplanarity or ambiguous connectivity during a split may be rejected. Float storage and finite tolerances do not guarantee arbitrary scales, narrow features, or unlimited cuts; projection/merging may lose sub-tolerance details |
+| Attributes | A required repair may be refused if it would flatten UV seams beyond tolerance, non-affine UVs, or nonuniform colors; ordinary multi-material meshes and UV seams remain supported |
+| Piece identity | IDs preserve identified pieces. Initial connectivity is inferred geometrically, without guaranteeing distinct identities for coincident input; no collision or Boolean union of overlapping pieces |
+| Capacity and history | At most 65,535 expanded vertices in this application. Complete CPU snapshots grow with history, without a budget or persistence; the vertex cap is not a general D3D11 limit |
 
-Suggested demonstration: straight and diagonal cube cuts → repeated undo/redo → a new cut after undo to demonstrate branching → an L-prism concave section → F1 triangulation inspection → F3 plane inspection → reload the asset to restore geometry and clear history.
+Clipping visits triangles; maps track shared edges and segments, while some position matching still uses linear search. Ear-candidate testing for an n-point contour can take $O(n^3)$ in the worst case. Boundary restoration, quality improvement, and bounded retries add work, so the full pipeline is not claimed to be linear. Temporary memory grows with input/output geometry, topology maps, and contours. Replacement holds old and new resources simultaneously; history additionally owns CPU geometry and IDs while sharing texture references.
+
+Validation covers multi-material meshes, concave sections, existing edges/vertices, targeted piece cuts, overlapping piece identities, and repeated cuts, checking edge incidence, winding, and volume error. Passing these cases does not guarantee success on every input.
+
+Suggested demonstration: cube cut → cross-material cap → concave L-prism section → cut only the middle piece → undo/redo and branching → F1/F3 inspection → OBJ reload.

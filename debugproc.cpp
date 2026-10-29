@@ -38,74 +38,41 @@ void DrawDebugProc(void)
 //=============================================================================
 // デバッグ表示の登録
 //=============================================================================
-void PrintDebugProc(char *fmt,...)
+void PrintDebugProc(const char* fmt, ...)
 {
-#if 0
-	long *pParam;
-	static char aBuf[256];
+    if (fmt == nullptr)
+    {
+        return;
+    }
 
-	pParam = (long*)&fmt;
-	sprintf(aBuf, fmt, pParam[1], pParam[2], pParam[3], pParam[4],
-									pParam[5], pParam[6], pParam[7], pParam[8],
-									pParam[9], pParam[10], pParam[11], pParam[12]);
-#else
-	va_list list;			// 可変引数を処理する為に使用する変数
-	char *pCur;
-	char aBuf[256]={"\0"};
-	char aWk[32];
+    // 1回の呼び出しで生成する文字列を保持する。
+    char buffer[1024] = {};
 
-	// 可変引数にアクセスする前の初期処理
-	va_start(list, fmt);
+    va_list arguments;
+    va_start(arguments, fmt);
 
-	pCur = fmt;
-	for( ; *pCur; ++pCur)
-	{
-		if(*pCur != '%')
-		{
-			sprintf_s(aWk, "%c", *pCur);
-		}
-		else
-		{
-			pCur++;
+    // 標準の書式処理を使用する。
+    // 容量を超える場合は切り詰め、終端文字を保証する。
+    vsnprintf_s(
+        buffer,
+        sizeof(buffer),
+        _TRUNCATE,
+        fmt,
+        arguments);
 
-			switch(*pCur)
-			{
-			case 'd':
-				// 可変引数にアクセスしてその変数を取り出す処理
-				sprintf_s(aWk, "%d", va_arg(list, int));
-				break;
+    va_end(arguments);
 
-			case 'f':
-				// 可変引数にアクセスしてその変数を取り出す処理
-				sprintf_s(aWk, "%.2f", va_arg(list, double));		// double型で指定
-				break;
+    // 文字列全体を追加できる場合だけ、描画用バッファへ連結する。
+    const std::size_t currentLength = std::strlen(g_aStrDebug);
+    const std::size_t messageLength = std::strlen(buffer);
 
-			case 's':
-				// 可変引数にアクセスしてその変数を取り出す処理
-				sprintf_s(aWk, "%s", va_arg(list, char*));
-				break;
-
-			case 'c':
-				// 可変引数にアクセスしてその変数を取り出す処理
-				sprintf_s(aWk, "%c", va_arg(list, char));
-				break;
-
-			default:
-				sprintf_s(aWk, "%c", *pCur);
-				break;
-			}
-		}
-		strcat_s(aBuf, aWk);
-	}
-
-	// 可変引数にアクセスした後の終了処理
-	va_end(list);
-
-	// 連結
-	if((strlen(g_aStrDebug) + strlen(aBuf)) < ((sizeof g_aStrDebug) - 1))
-	{
-		strcat_s(g_aStrDebug, aBuf);
-	}
-#endif
+    if (currentLength < sizeof(g_aStrDebug)
+        && messageLength < sizeof(g_aStrDebug) - currentLength)
+    {
+        strcat_s(
+            g_aStrDebug,
+            sizeof(g_aStrDebug),
+            buffer);
+    }
 }
 

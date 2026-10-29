@@ -8,6 +8,10 @@
 #include <functional>
 #include <unordered_map>
 #include <stack>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <utility>
 
 // メッシュ切断のCPU側計算を担当する。
 // 描画バッファやプレイヤーの状態は直接操作しない。
@@ -53,7 +57,8 @@ public:
     // 切断計算の設定値。
     struct Options
     {
-        // 平面上の判定や交点の統合に使用する位置許容誤差。
+        // 平面上の判定や交点統合に使用する基準許容誤差。
+        // 接続を確定できない場合、成分内だけ最大2回半減して再試行する。
         float epsilon = 0.0001f;
 
         // 切断後に、それぞれの側を移動させる距離。
@@ -75,7 +80,7 @@ public:
         // 入力形式や設定値が不正。
         InvalidInput,
 
-        // 交線が閉じない、または輪郭を一意に構築できない。
+        // 輪郭や、生成後の面接続を一意に確定できない。
         OpenOrAmbiguousContour,
 
         // 入れ子の輪郭による穴を検出した。
@@ -85,36 +90,46 @@ public:
         TriangulationFailed
     };
 
-    // 元サブセットの表面を、平面の両側へ切り分けた結果。
-    // 封口用の三角形は含めない。
+    // 平面の両側にある三角形と、その破片番号を保持する。
     template<class VertexType>
     struct SurfaceResult
     {
-        // 平面法線の反対側に残る原表面。
+        // 負側の展開済み三角形頂点。
         std::vector<VertexType> negative;
 
-        // 平面法線が向く側に残る原表面。
+        // 正側の展開済み三角形頂点。
         std::vector<VertexType> positive;
+
+        // negativeの各三角形が属する破片番号。
+        // negativePieceIds[i]は、negativeの3*iから始まる三角形に対応する。
+        std::vector<std::uint64_t> negativePieceIds;
+
+        // positiveの各三角形が属する破片番号。
+        std::vector<std::uint64_t> positivePieceIds;
     };
 
-    // 全サブセットをまとめて処理した、モデル全体の切断結果。
+    // モデル全体の切断結果と、編集用の破片情報。
     template<class VertexType>
     struct ModelResult
     {
-        // 切断の成否は、モデル全体について判定する。
         Status status = Status::Unchanged;
 
-        // 元サブセットごとの原表面を保持する。
-        // 入力と同じ順序・要素数を維持し、材質の対応付けに使用する。
+        // 切断を採用した成分の原表面。
+        // 添字は入力サブセット番号に対応する。
         std::vector<SurfaceResult<VertexType>> subsets;
 
         // 切断しなかった成分の原表面。
-        // 元の位置と属性を維持し、同じ材質番号ごとに保持する。
+        // 元の位置と材質の対応を維持する。
         std::vector<std::vector<VertexType>> unchangedSubsets;
 
-        // 全サブセットの交線から生成した、両側の封口。
-        // 元表面とは分離し、呼び出し元で封口用の材質を設定する。
+        // unchangedSubsetsの各三角形に対応する破片番号。
+        std::vector<std::vector<std::uint64_t>> unchangedPieceIds;
+
+        // 新しく生成した封口と、その破片番号。
         SurfaceResult<VertexType> caps;
+
+        // この結果を採用した後に使用する、次の破片番号。
+        std::uint64_t nextPieceId = 1;
     };
 
     // ------------------------------------------------------------------------
@@ -139,35 +154,51 @@ public:
         const XMMATRIX& projectionMatrix,
         const XMMATRIX& inverseViewMatrix);
 
-    // 全サブセットの三角形を、同じ平面でまとめて切断する。
-    // 原表面はサブセット別に保持し、封口はモデル全体で生成する。
-    // 各サブセットの入力は、3頂点ごとに1つの三角形を表す。
+    // 新規モデルの初期連結成分に、破片番号を割り当てる。
+    // 出力の外側はサブセット番号、内側は三角形番号に対応する。
+    // requireClosedがtrueの場合は、生成結果の閉合も必要。
+    // 成功時のみpieceIdsとnextPieceIdを更新する。
+    template<class VertexType>
+    static bool InitializePieceIds(const std::vector<std::vector<VertexType>>& inputSubsets, float epsilon, 
+        std::vector<std::vector<std::uint64_t>>& pieceIds, std::uint64_t& nextPieceId, bool requireClosed = false);
+
+    // 持続的な破片番号に基づいて、モデルを切断する。
+    // 番号配列が省略された場合は、新規モデルとして初期化する。
+    // 初期化済みモデルでは、保存済みの番号とカウンターを渡す。
     template<class VertexType, class Accept>
     static ModelResult<VertexType> SliceModel(
-        const std::vector<std::vector<VertexType>>& inputSubsets,
-        Plane plane,
-        Options options,
-        Accept accept);
+        const std::vector<std::vector<VertexType>>&inputSubsets, 
+        Plane plane, Options options, Accept accept, 
+        const std::vector<std::vector<std::uint64_t>>& inputPieceIds = {},
+        std::uint64_t nextPieceId = 1);
 
-    // 1つの連結成分について、材質境界を越えて切断と封口を行う。
-    // plane.normalとoptionsは、SliceModelで検証済みとする。
+    // 1つの破片について、材質境界を越えて切断と封口を行う。
+    // 接続失敗時は局所許容誤差を細分化し、成功時のみ破片番号を確定する。
+    // planeとoptionsはSliceModelで検証済みであること。
     template<class VertexType, class Accept>
     static ModelResult<VertexType> SliceComponent(
         const std::vector<std::vector<VertexType>>& inputSubsets,
         const Plane& plane,
         const Options& options,
-        Accept& accept);
+        Accept& accept,
+        std::uint64_t& nextPieceId);
 
 private:
+
+    using IndexPair = std::pair<std::size_t, std::size_t>;
+    static constexpr unsigned PositiveSideMask = 1u;
+    static constexpr unsigned NegativeSideMask = 2u;
+    static constexpr unsigned BothSidesMask = PositiveSideMask | NegativeSideMask;
+
     // ------------------------------------------------------------------------
     // 内部計算用の型
     // ------------------------------------------------------------------------
     
-    // 切断平面上の2次元座標。
+    // 切断平面上の2次元座標。描画頂点のfloat型は変更しない。
     struct Point2
     {
-        float x;
-        float y;
+        double x;
+        double y;
     };
 
     // 封口三角形を構成する3つのノード番号。
@@ -191,12 +222,15 @@ private:
         std::size_t vertexStart;
     };
 
-    // 共有辺で接続された三角形の集合。
-    // 材質サブセットの境界を越えて構築する。
+    // 同じ編集対象として扱う三角形の集合。
     struct ConnectedComponent
     {
         // TriangleReference一覧への参照番号。
         std::vector<std::size_t> triangleIndices;
+
+        // 保存済みの破片番号。
+        // 幾何接続だけから作成した、未採番の成分では0。
+        std::uint64_t pieceId = 0;
     };
 
     // 接続判定専用の、三角形の位置番号。
@@ -255,11 +289,7 @@ private:
     };
 
     // 各格子に、その内部の代表位置番号を保存する。
-    using TopologyGrid =
-        std::unordered_map<
-        GridCell,
-        std::vector<std::size_t>,
-        GridCellHash>;
+    using TopologyGrid = std::unordered_map<GridCell, std::vector<std::size_t>, GridCellHash>;
 
     // 1回のモデル切断で、全サブセットが共有する作業データ。
     // サブセットを切り替えても、この内容は初期化しない。
@@ -270,6 +300,16 @@ private:
         // 配列の添字を共通ノード番号として使用する。
         std::vector<VertexType> nodes;
 
+        // 材質境界をまたいで共有する、元の位置番号と分類。
+        std::vector<Vec3> inputPositions;
+        std::vector<double> inputDistances;
+        std::vector<std::vector<std::size_t>> inputVertexIds;
+
+        // (i,i)は元頂点、(min(i,j),max(i,j))は元辺を表す。
+        std::map<IndexPair, std::size_t> cutNodeLookup;
+
+        // 交線に接する三角形の正側・負側フラグ。
+        std::map<IndexPair, unsigned> contourEdges;
         // 共通ノード間の接続関係。
         // nodesと同じ数の要素を持つ。
         std::vector<std::vector<std::size_t>> adjacency;
@@ -301,7 +341,12 @@ private:
 
     // 2次元の有向面積の2倍を求める。
     // 正なら左回り、負なら右回り、0なら3点が同一直線上にある。
-    static float Orient(Point2 a, Point2 b, Point2 c);
+    static double Orient(Point2 a, Point2 b, Point2 c);
+    // 2次元の距離をdoubleで求める。
+    static double Distance2D(Point2 a, Point2 b);
+
+    // 有向面積の演算誤差の許容値。位置epsilonとは区別する。
+    static double OrientationError(Point2 a, Point2 b, Point2 c);
 
     // ------------------------------------------------------------------------
     // 頂点補間と三角形のクリッピング
@@ -312,16 +357,10 @@ private:
     template<class VertexType>
     static VertexType Interpolate(const VertexType& a, const VertexType& b, float t);
 
-    // 退化した三角形を除外し、指定された頂点順で結果へ追加する。
-    template<class VertexType>
-    static void Triangle(std::vector<VertexType>& output, const VertexType& a,
-        const VertexType& b, const VertexType& c, float epsilon);
-
-    // 三角形を平面の片側へクリッピングし、結果を三角形として追加する。
-    // sideが+1なら正側、-1なら負側を残す。
-    template<class VertexType>
-    static void Clip(const VertexType* triangle, const float* distances,
-        float side, float epsilon, std::vector<VertexType>& output);
+    // 完全に潰れた三角形を除外し、指定された頂点順で結果へ追加する。
+    template <class VertexType>
+    static void Triangle(std::vector<VertexType>& output, 
+        const VertexType& a, const VertexType& b, const VertexType& c);
 
     // ------------------------------------------------------------------------
     // 材質境界を越えた連結成分の構築
@@ -364,34 +403,23 @@ private:
 
     // 共有辺から三角形の接続関係を作り、連結成分へ分ける。
     // 位置番号が重複する三角形や、3面以上が共有する辺は拒否する。
-    // 開いた境界の存在だけでは、この段階では拒否しない。
+    // requireClosedがtrueの場合、1面だけが持つ境界辺も拒否する。
     static bool BuildConnectedComponents(
         const std::vector<TriangleTopology>& topology,
-        std::vector<ConnectedComponent>& components);
+        std::vector<ConnectedComponent>& components,
+        bool requireClosed = false);
 
-    // 1つのサブセットについて、原表面を切り分けて交線を収集する。
-    // plane.normalは、呼び出し前に単位長へ正規化しておく。
-    // contextは全サブセットで共有し、この関数では初期化しない。
-    // falseの場合、failureStatusに中断理由を設定する。
-    template<class VertexType, class Accept>
-    static bool ClipSubset(
-        const std::vector<VertexType>& input,
-        const Plane& plane,
-        float epsilon,
-        Accept& accept,
-        SurfaceResult<VertexType>& surface,
-        CutContext<VertexType>& context,
-        Status& failureStatus);
+    // 保存済みの破片番号から、三角形を処理グループへ分ける。
+    // 異なる番号の三角形は、位置が一致しても接続しない。
+    // trianglesはCollectTriangleReferencesの成功結果を使用する。
+    // 失敗した場合、呼び出し元はcomponentsを使用しない。
+    static bool BuildComponentsFromPieceIds(const std::vector<TriangleReference>& triangles,
+        const std::vector<std::vector<std::uint64_t>>& pieceIds,
+        std::vector<ConnectedComponent>& components);
 
     // ------------------------------------------------------------------------
     // 交点の統合と閉じた輪郭の構築
     // ------------------------------------------------------------------------
-
-    // 1つの三角形から取得した交点の重複を除く。
-    // 同じ位置の交点が登録済みであれば追加しない。
-    template<class VertexType>
-    static void AddUniqueIntersection(const VertexType& vertex, 
-        float epsilon, std::vector<VertexType>& intersections);
 
     // 同じ位置の交点が存在すれば、その番号を返す。
     // 存在しなければ新しい交点を追加し、その番号を返す。
@@ -424,7 +452,7 @@ private:
 
     // 輪郭の符号付き面積の2倍を求める。
     // 正なら反時計回り、負なら時計回りを表す。
-    static float SignedDoubleArea(const std::vector<std::size_t>& contour, 
+    static double SignedDoubleArea(const std::vector<std::size_t>& contour, 
         const std::vector<Point2>& projected);
 
     // 輪郭の頂点順を、2次元座標上の反時計回りに統一する。
@@ -433,11 +461,8 @@ private:
 
     // 閉じた輪郭を耳切り法で三角形へ分割する。
     // 失敗した場合、呼び出し元は出力結果を使用しない。
-    static bool TriangulateContours(
-        const std::vector<std::vector<std::size_t>>& loops,
-        const std::vector<Point2>& projected,
-        float epsilon,
-        std::vector<TriangleIndices>& capTriangles);
+    static bool TriangulateContours(const std::vector<std::vector<std::size_t>>& loops,
+        const std::vector<Point2>& projected, float epsilon, std::vector<TriangleIndices>& capTriangles);
 
     // ------------------------------------------------------------------------
     // 封口用の頂点生成
@@ -451,21 +476,150 @@ private:
 
     // 三角形分割の結果から、両側の封口頂点を生成する。
     template<class VertexType>
-    static void AppendCapTriangles(
-        SurfaceResult<VertexType>& result,
-        const std::vector<VertexType>& nodes,
-        const std::vector<Point2>& projected,
-        const std::vector<TriangleIndices>& capTriangles,
-        const Plane& plane,
-        const Options& options);
+    static void AppendCapTriangles(SurfaceResult<VertexType>& result,
+        const std::vector<VertexType>& nodes, const std::vector<Point2>& projected,
+        const std::vector<TriangleIndices>& capTriangles, const Plane& plane, const Options& options);
 
     // 両側の頂点を、平面法線に沿って反対方向へ移動する。
     // 原表面と封口に、同じ移動量を適用する。
     template<class VertexType>
-    static void ApplySeparation(
-        SurfaceResult<VertexType>& surface,
-        const Plane& plane,
-        float separation);
+    static void ApplySeparation(SurfaceResult<VertexType>& surface, const Plane& plane, float separation);
+
+    // 両側の頂点配列と破片番号を、対応関係を維持して追加する。
+    // sourceとdestinationには、採番済みの結果を指定する。
+    // 対応数が不正な場合は、追加せずfalseを返す。
+    template<class VertexType>
+    static bool AppendSurface(SurfaceResult<VertexType>& destination, const SurfaceResult<VertexType>& source);
+
+    // 1つの成分を切断した結果について、片側の新しい破片番号を割り当てる。
+    // 全材質の原表面と封口を、一緒に接続判定する。
+    // falseの場合、呼び出し元はcomponentResultを採用しない。
+    template<class VertexType>
+    static bool AssignSidePieceIds(ModelResult<VertexType>& componentResult,
+        bool positiveSide, float epsilon, std::uint64_t& nextPieceId);
+
+    // 両側の新しい破片番号を割り当てる。
+    // 両側とも成功した場合だけ、呼び出し元のnextPieceIdを更新する。
+    template<class VertexType>
+    static bool AssignNewPieceIds(ModelResult<VertexType>& componentResult,
+        float epsilon, std::uint64_t& nextPieceId);
+
+    // ------------------------------------------------------------------------
+    // 共通交点、三角化、移動後の検証を担当する内部処理
+    // ------------------------------------------------------------------------
+
+    // 入力位置と符号付き距離を、材質をまたいで一度だけ計算する。
+    template <class VertexType>
+    static bool InitializeCutContext(const std::vector<std::vector<VertexType>>& inputSubsets,
+        const Plane& plane, float epsilon, CutContext<VertexType>& context);
+
+    // 元頂点または元辺の番号から、共有する交点番号を取得する。
+    template <class VertexType>
+    static std::size_t FindOrAddSharedCutNode(IndexPair key, const VertexType& vertex,
+        float epsilon, CutContext<VertexType>& context);
+
+    // 描画属性を個別に補間し、位置だけを共有キャッシュへそろえる。
+    template <class VertexType>
+    static VertexType InterpolateSharedEdge(const VertexType& a, const VertexType& b,
+        std::size_t indexA, std::size_t indexB, float epsilon,
+        CutContext<VertexType>& context, std::size_t& nodeIndex);
+
+    // 交点を再計算せず、事前計算済みの頂点から片側を生成する。
+    template <class VertexType>
+    static void AppendClippedTriangle(const VertexType* triangle, const double* distances,
+        const VertexType* intersections, const bool* crossed,
+        int side, std::vector<VertexType>& output);
+
+    // 原表面を切り分け、隣接面が存在する側を交線ごとに蓄積する。
+    template <class VertexType>
+    static bool ClipSubset(const std::vector<VertexType>& input,
+        const std::vector<std::size_t>& inputIds, float epsilon, SurfaceResult<VertexType>& surface, 
+        CutContext<VertexType>& context, Status& failureStatus);
+
+    // 接触辺を除外し、実際の切断輪郭について筆划範囲を確認する。
+    template <class VertexType, class Accept>
+    static bool BuildContourAdjacency(CutContext<VertexType>& context, Accept& accept);
+
+    // 同じ番号を二度追加しない。位置の近さとは区別して扱う。
+    static void AppendUniqueIndex(std::vector<std::size_t>& indices, std::size_t index);
+
+    // 位置番号ごとの辺使用数から、平面領域の外周を取り出す。
+    static bool BuildSurfaceBoundaryLoops(const std::vector<TriangleTopology>& topology,
+        std::size_t nodeCount, std::vector<std::vector<std::size_t>>& loops);
+
+    // 耳候補の品質を、最長辺に対する高さで比較する。
+    static double MinimumTriangleHeight(const TriangleIndices& triangle,
+        const std::vector<Point2>& projected);
+
+    // 内包判定では、幾何学的epsilonではなく有向面積の演算誤差を使う。
+    static bool IsInsideEarTriangle(Point2 point, Point2 a, Point2 b, Point2 c);
+
+    // 反時計回りの1輪郭を耳切りする。
+    static bool EarClipContour(std::vector<std::size_t> loop, const std::vector<Point2>& projected,
+        std::vector<TriangleIndices>& triangles);
+
+    // 外周辺を維持し、細い三角形を改善できる共有対角線だけを交換する。
+    static bool ImproveTriangulation(std::vector<TriangleIndices>& triangles,
+        const std::vector<Point2>& projected, float epsilon, std::size_t contourSize);
+
+    // 簡略化を行わない耳切りと、内部対角線の改善を組み合わせる。
+    static bool TriangulateDirect(const std::vector<std::vector<std::size_t>>& loops,
+        const std::vector<Point2>& projected, float epsilon, std::vector<TriangleIndices>& triangles);
+
+    // 元の全頂点について、単調な近共線鎖として扱えるか確認する。
+    static bool CanSimplifyBoundaryChain(const std::vector<std::size_t>& original,
+        const std::vector<Point2>& projected, std::size_t first, std::size_t last, float epsilon);
+
+    // 省略した境界点をすべて戻し、原表面と封口の辺分割を一致させる。
+    static bool RestoreBoundaryNodes(const std::vector<std::size_t>& original,
+        const std::vector<std::size_t>& kept, const std::vector<Point2>& projected,
+        std::vector<TriangleIndices>& triangles);
+
+    // 近共線鎖を一時的に簡略化し、耳切り後に外周を復元する。
+    static bool TriangulateWithBoundaryRestore(const std::vector<std::vector<std::size_t>>& loops,
+        const std::vector<Point2>& projected, float epsilon, std::vector<TriangleIndices>& triangles);
+
+    // 実際の3次元面が、期待する法線側を向いているかdoubleで確認する。
+    template <class VertexType>
+    static bool HasValidSurfaceWinding(const std::vector<VertexType>& vertices, Vec3 normal);
+
+    // floatで分離した後に反転した封口だけを、最終座標で再分割する。
+    template <class VertexType>
+    static bool RepairMovedCaps(SurfaceResult<VertexType>& caps,
+        const std::vector<VertexType>& nodes, const std::vector<std::vector<std::size_t>>& loops,
+        const std::vector<Point2>& originalProjected, const Plane& plane, const Options& options);
+
+    // 元の向き、同一法線、平面性から、既存面の再分割対象を限定する。
+    template <class VertexType>
+    static bool TryGetFlatSurfacePlane(const std::vector<VertexType>& surface,
+        const std::vector<VertexType>& reference, float epsilon, Plane& plane);
+
+    // 境界再分割用の位置番号と、属性を保持した代表頂点を準備する。
+    template <class VertexType>
+    static bool BuildFlatSurfaceData(const std::vector<VertexType>& surface, float epsilon,
+        std::vector<VertexType>& nodes, std::vector<TriangleTopology>& topology);
+
+    // 対角線を変更してもUVと色の補間を維持できる範囲か確認する。
+    template <class VertexType>
+    static bool HasAffineSurfaceAttributes(const std::vector<VertexType>& nodes,
+        const std::vector<TriangleTopology>& topology, const std::vector<Point2>& projected,
+        const std::vector<VertexType>& drawingVertices, float epsilon);
+
+    // 再切断された既存封口など、修復可能な平面領域だけを再分割する。
+    template <class VertexType>
+    static bool RepairFlatSurface(std::vector<VertexType>& surface,
+        const std::vector<VertexType>& reference, float epsilon);
+
+    // 頂点のfloat間隔と距離演算誤差から、局所細分化の下限を求める。
+    template <class VertexType>
+    static double MinimumRefinementEpsilon(const std::vector<std::vector<VertexType>>& input,
+        const Plane& plane, float separation);
+
+    // 1つの許容誤差で、分離後の閉合確認と採番までを試みる。
+    template <class VertexType, class Accept>
+    static ModelResult<VertexType> SliceComponentAttempt(
+        const std::vector<std::vector<VertexType>>& inputSubsets, const Plane& plane,
+        const Options& options, Accept& accept, std::uint64_t& nextPieceId);
 };
 
 // テンプレートの定義を、利用側の翻訳単位から参照可能にする。

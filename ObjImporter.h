@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <vector>
 
 //*********************************************************
 // 構造体
@@ -55,6 +57,15 @@ struct MODEL
 	unsigned short	IndexNum;
 	SUBSET* SubsetArray;
 	unsigned short	SubsetNum;
+
+	// 各三角形が属する編集用の破片番号。
+	// TrianglePieceIds[i]は、IndexArrayの3*iから始まる三角形に対応する。
+	// 空配列は、初期の連結成分がまだ識別されていないことを表す。
+	std::vector<std::uint64_t> TrianglePieceIds;
+
+	// 新しく生成する破片に割り当てる番号。
+	// 0は未割り当てとして予約する。
+	std::uint64_t NextPieceId = 1;
 };
 
 

@@ -46,6 +46,10 @@ std::unique_ptr<ModelSnapshot> ModelSnapshot::Capture(const DX11_MODEL* model)
     snapshot->m_Indices.assign(source.IndexArray, source.IndexArray + source.IndexNum);
     snapshot->m_Subsets.assign(source.SubsetArray, source.SubsetArray + source.SubsetNum);
 
+    // 幾何配列と同じ時点の破片情報を保存する。
+    snapshot->m_TrianglePieceIds = source.TrianglePieceIds;
+    snapshot->m_NextPieceId = source.NextPieceId;
+
     // 配列の確保とコピーが完了してから、テクスチャ参照を取得する。
     // 各サブセットにつき1つの参照を保持する。
     for (const SUBSET& subset : snapshot->m_Subsets)
@@ -117,6 +121,10 @@ HRESULT ModelSnapshot::Restore(DX11_MODEL* target) const
 
         // MODEL 本体も、現在のモデルを変更する前に確保しておく。
         auto restoredModel = std::make_unique<MODEL>();
+
+        // 旧モデルを変更する前に、編集用の破片情報も準備する。
+        restoredModel->TrianglePieceIds = m_TrianglePieceIds;
+        restoredModel->NextPieceId = m_NextPieceId;
 
         BufferOwner restoredVertexBuffer;
         BufferOwner restoredIndexBuffer;

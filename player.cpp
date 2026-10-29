@@ -12,10 +12,11 @@
 #include "player.h"
 #include "ModelHistory.h"
 
+
 //*****************************************************************************
 // マクロ定義
 //*****************************************************************************
-#define	MODEL_PLAYER		"data/MODEL/01_cube.obj"		// 読み込むモデル名
+#define	MODEL_PLAYER		"MeshCutTests/01_立方体.obj"		// 読み込むモデル名
 
 #define	VALUE_MOVE			(2.0f)							// 移動量
 #define	VALUE_ROTATE		(XM_PI * 0.02f)					// 回転量
@@ -43,6 +44,7 @@ static Plane g_CuttingPlane;
 static bool g_ShowCuttingPlane = false;         // 切断平面のデバッグ表示を有効にするか。
 static bool g_HasCuttingPlane = false;          // 表示可能な切断平面の頂点が作成済みか。
 static ModelHistory g_ModelHistory;             // 現在のプレイヤーモデルに対する編集履歴。
+static char g_OperationFailureMessage[256] = {};    // 操作失敗のメッセージを保持する。
 
 //=============================================================================
 // 初期化処理
@@ -186,6 +188,10 @@ void UpdatePlayer(void)
 
     PrintDebugProc("Ctrl + Z: 元に戻す\n");
     PrintDebugProc("Ctrl + Y / Ctrl + Shift + Z: やり直す\n");
+
+    // 保存した文字列を、そのまま毎フレーム表示する。
+    if (g_OperationFailureMessage[0] != '\0')
+        PrintDebugProc("%s\n", g_OperationFailureMessage);
 }
 
 //=============================================================================
@@ -260,6 +266,24 @@ void CutMeshes(DX11_MODEL* model)
     std::vector<std::vector<VERTEX_3D>> inputSubsets;
     inputSubsets.resize(source.SubsetNum);
 
+    // 空の番号配列は、新規モデルとして初期化するために使用する。
+    std::vector<std::vector<std::uint64_t>> inputPieceIds;
+
+    // 破片番号は、インデックス配列の三角形順に保存されている。
+    if (source.IndexNum % 3 != 0)
+        return;
+
+    if (!source.TrianglePieceIds.empty())
+    {
+        if (source.TrianglePieceIds.size() != static_cast<std::size_t>(source.IndexNum) / 3)
+        {
+            SetOperationFailureMessage("破片番号と三角形数が一致しません。");
+            return;
+        }
+
+        inputPieceIds.resize(source.SubsetNum);
+    }
+
     // 封口には、最初の空でないサブセットの材質を使用する。
     // SubsetNumは、有効なサブセット番号と重ならない初期値。
     std::size_t capMaterialIndex = source.SubsetNum;
@@ -276,9 +300,19 @@ void CutMeshes(DX11_MODEL* model)
             || indexCount > source.IndexNum - startIndex)
             return;
 
-        // 3インデックスごとに1つの三角形を構成する。
-        if (indexCount % 3 != 0)
+        // 番号配列も三角形単位で参照するため、開始位置を確認する。
+        if (startIndex % 3 != 0 || indexCount % 3 != 0)
             return;
+
+        if (!source.TrianglePieceIds.empty())
+        {
+            const std::size_t firstTriangle = startIndex / 3;
+            const std::size_t triangleCount = indexCount / 3;
+
+            const auto firstId = source.TrianglePieceIds.begin() + firstTriangle;
+
+            inputPieceIds[subsetIndex].assign(firstId, firstId + triangleCount);
+        }
 
         // 空のサブセットは番号だけ維持し、頂点を追加しない。
         if (indexCount == 0)
@@ -313,17 +347,26 @@ void CutMeshes(DX11_MODEL* model)
         inputSubsets,
         plane,
         MeshCutter::Options{},
-        PlayerCutSupport::IsInsideStroke);
+        PlayerCutSupport::IsInsideStroke,
+        inputPieceIds,
+        source.NextPieceId);
 
     // 未変更の場合は、元モデルと編集履歴を維持する。
     if (result.status == MeshCutter::Status::Unchanged)
         return;
 
+    if (result.status == MeshCutter::Status::UnsupportedHole)
+    {
+        SetOperationFailureMessage("切断失敗：穴を含む断面には対応していません。");
+        return;
+    }
+
+
     // 一部のサブセットだけを採用せず、モデル全体の結果で判断する。
     if (result.status != MeshCutter::Status::Cut)
     {
-        PrintDebugProc(
-            "モデル全体の切断に失敗しました: status %d\n",
+        SetOperationFailureMessage(
+            "モデル全体の切断に失敗しました: status %d",
             static_cast<int>(result.status));
 
         return;
@@ -366,6 +409,8 @@ void CutMeshes(DX11_MODEL* model)
             // 負側があれば、基本出力として保持する。
             staged.primaryVertices = PlayerCutSupport::CopyVertices(surface.negative);
 
+            staged.primaryPieceIds = surface.negativePieceIds;
+
             totalVertexCount += surface.negative.size();
             ++totalSubsetCount;
 
@@ -373,6 +418,8 @@ void CutMeshes(DX11_MODEL* model)
             {
                 // 両側に頂点がある場合、正側を追加出力にする。
                 staged.additionalVertices = PlayerCutSupport::CopyVertices(surface.positive);
+
+                staged.additionalPieceIds = surface.positivePieceIds;
 
                 totalVertexCount += surface.positive.size();
                 ++totalSubsetCount;
@@ -383,6 +430,8 @@ void CutMeshes(DX11_MODEL* model)
             // 正側しかない場合は、それを基本出力として保持する。
             staged.primaryVertices = PlayerCutSupport::CopyVertices(surface.positive);
 
+            staged.primaryPieceIds = surface.positivePieceIds;
+
             totalVertexCount += surface.positive.size();
             ++totalSubsetCount;
         }
@@ -391,26 +440,22 @@ void CutMeshes(DX11_MODEL* model)
     }
 
     // 切断しなかった成分も、元の材質と位置で更新結果へ含める。
-    for (std::size_t subsetIndex = 0;
-        subsetIndex < result.unchangedSubsets.size();
-        ++subsetIndex)
+    for (std::size_t subsetIndex = 0; subsetIndex < result.unchangedSubsets.size(); ++subsetIndex)
     {
-        const std::vector<VERTEX_3D>& vertices =
-            result.unchangedSubsets[subsetIndex];
+        const std::vector<VERTEX_3D>& vertices = result.unchangedSubsets[subsetIndex];
 
         if (vertices.empty())
-        {
             continue;
-        }
 
         PlayerCutSupport::PendingSubset staged;
 
-        staged.material =
-            source.SubsetArray[subsetIndex].Material;
+        staged.material = source.SubsetArray[subsetIndex].Material;
 
         // 未変更の表面なので、追加出力は作成しない。
-        staged.primaryVertices =
-            PlayerCutSupport::CopyVertices(vertices);
+        staged.primaryVertices = PlayerCutSupport::CopyVertices(vertices);
+
+        // 未切断の三角形は、保存済みの番号をそのまま引き継ぐ。
+        staged.primaryPieceIds = result.unchangedPieceIds[subsetIndex];
 
         totalVertexCount += vertices.size();
         ++totalSubsetCount;
@@ -428,7 +473,8 @@ void CutMeshes(DX11_MODEL* model)
     if (totalVertexCount > maximumCount
         || totalSubsetCount > maximumCount)
     {
-        PrintDebugProc( "Mesh cut rejected: legacy 16-bit model capacity exceeded.\n");
+        // 現在のモデル形式で扱える頂点数を超えた。
+        SetOperationFailureMessage("切断失敗：16ビット形式の頂点数上限を超えました。");
         return;
     }
 
@@ -438,9 +484,36 @@ void CutMeshes(DX11_MODEL* model)
 
     if (hasPendingUpdate)
 	{
-		PrintDebugProc("Mesh cut rejected: model update already pending.\n");
+        // 前回のモデル更新がまだ完了していない。
+        SetOperationFailureMessage("切断失敗：前回のモデル更新が処理待ちです。");
 		return;
 	}
+
+    // モデル更新キューと同じ順序で、三角形の破片番号を並べる。
+    std::vector<std::uint64_t> updatedPieceIds;
+    updatedPieceIds.reserve(totalVertexCount / 3);
+
+    for (const PlayerCutSupport::PendingSubset& subset : pending)
+    {
+        updatedPieceIds.insert(
+            updatedPieceIds.end(),
+            subset.primaryPieceIds.begin(),
+            subset.primaryPieceIds.end());
+
+        if (subset.additionalVertices)
+        {
+            updatedPieceIds.insert(
+                updatedPieceIds.end(),
+                subset.additionalPieceIds.begin(),
+                subset.additionalPieceIds.end());
+        }
+    }
+
+    if (updatedPieceIds.size() != totalVertexCount / 3)
+    {
+        SetOperationFailureMessage("更新結果の破片番号数が不正です。");
+        return;
+    }
 
     // ------------------------------------------------------------------------
 	// 6. 取り消し履歴を準備し、モデル更新キューへ切断結果を引き渡す
@@ -451,8 +524,8 @@ void CutMeshes(DX11_MODEL* model)
 
     if (FAILED(historyResult))
     {
-        PrintDebugProc(
-            "取り消し履歴の保存に失敗しました: 0x%08X\n",
+        SetOperationFailureMessage(
+            "取り消し履歴の保存に失敗しました: 0x%08X",
             static_cast<unsigned int>(historyResult));
 
         return;
@@ -501,12 +574,12 @@ void CutMeshes(DX11_MODEL* model)
     
     // TryUpdateModelは、成功・失敗のどちらでも更新キューを消費する。
     // GPUバッファの作成に失敗した場合は、元のモデルを維持する。
-    HRESULT updateResult = PlayerCutSupport::TryUpdateModel(model);
+    HRESULT updateResult = PlayerCutSupport::TryUpdateModel(model, updatedPieceIds, result.nextPieceId);
 
     if (FAILED(updateResult))
     {
-        PrintDebugProc(
-            "切り取り結果の反映に失敗しました: 0x%08X\n",
+        SetOperationFailureMessage(
+            "切り取り結果の反映に失敗しました: 0x%08X",
             static_cast<unsigned int>(updateResult));
 
         return;
@@ -514,6 +587,9 @@ void CutMeshes(DX11_MODEL* model)
 
     // モデルの置き換えに成功したため、切り取り履歴を確定する。
     historyGuard.succeeded = true;
+
+    // 切断結果の適用成功時に、以前の失敗表示を消す。
+    g_OperationFailureMessage[0] = '\0';
 }
 
 //=============================================================================
@@ -713,8 +789,8 @@ bool UpdateModelHistoryShortcuts(void)
     }
     else if (FAILED(result))
     {
-        PrintDebugProc(
-            "編集履歴の復元に失敗しました: 0x%08X\n",
+        SetOperationFailureMessage(
+            "編集履歴の復元に失敗しました: 0x%08X",
             static_cast<unsigned int>(result));
     }
 
@@ -735,8 +811,8 @@ void UpdateMeshCut(void)
 	if (IsMouseLeftTriggered())
 	{
         g_IsDragging = TRUE;
-        g_StartX = GetMousePosX();
-        g_StartY = GetMousePosY();
+        g_StartX = static_cast<float>(GetMousePosX());
+        g_StartY = static_cast<float>(GetMousePosY());
 		g_CurrentX = g_StartX;
 		g_CurrentY = g_StartY;
         g_EndX = 0.0f;
@@ -744,8 +820,8 @@ void UpdateMeshCut(void)
 	}
 	else if (IsMouseLeftPressed() && g_IsDragging == TRUE)
 	{
-		long newX = GetMousePosX();
-		long newY = GetMousePosY();
+        float newX = static_cast<float>(GetMousePosX());
+        float newY = static_cast<float>(GetMousePosY());
 		g_CurrentX = newX;
 		g_CurrentY = newY;
 
@@ -753,8 +829,8 @@ void UpdateMeshCut(void)
 	else if (!IsMouseLeftPressed() && g_IsDragging == TRUE)
 	{
         g_IsDragging = FALSE;
-        g_EndX = GetMousePosX();
-        g_EndY = GetMousePosY();
+        g_EndX = static_cast<float>(GetMousePosX());
+        g_EndY = static_cast<float>(GetMousePosY());
 
 		UpdateCuttingPlane();
 	}
@@ -988,7 +1064,8 @@ std::unique_ptr<SimpleArray<VERTEX_3D>> PlayerCutSupport::CopyVertices(const std
 //=============================================================================
 // 更新用配列からモデルを再構築し、準備完了後に旧モデルと置き換える
 //=============================================================================
-HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model)
+HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model,
+    const std::vector<std::uint64_t>& trianglePieceIds, std::uint64_t nextPieceId)
 {
     if (model == nullptr || model->modelData == nullptr)
     {
@@ -1096,6 +1173,23 @@ HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model)
 
         if (totalVertexCount == 0 || totalSubsetCount > maximumCount)
             return E_INVALIDARG;
+
+        // 更新後の全三角形に、対応する番号が必要。
+        if (totalVertexCount % 3 != 0
+            || trianglePieceIds.size() != totalVertexCount / 3
+            || nextPieceId == 0)
+        {
+            return E_INVALIDARG;
+        }
+
+        for (std::uint64_t pieceId : trianglePieceIds)
+        {
+            // 0は未割り当て。次の番号との衝突も防ぐ。
+            if (pieceId == 0 || pieceId >= nextPieceId)
+            {
+                return E_INVALIDARG;
+            }
+        }
 
         // --------------------------------------------------------------------
         // 3. 新しいCPU側配列を確保する
@@ -1208,6 +1302,11 @@ HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model)
         // 置き換え先を旧モデルの破棄前に確保する。
         std::unique_ptr<MODEL> newModelData(new MODEL{});
 
+        // 旧モデルを解放する前に、編集用メタデータも準備する。
+        newModelData->TrianglePieceIds = trianglePieceIds;
+
+        newModelData->NextPieceId = nextPieceId;
+
         // 新しい各サブセットが、テクスチャ参照を1つずつ所有する。
         // 旧モデルのReleaseより前に参照数を増やす。
         for (std::size_t subsetIndex = 0; subsetIndex < totalSubsetCount; ++subsetIndex)
@@ -1251,4 +1350,18 @@ HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model)
         // 旧モデルを破棄する前のメモリ確保失敗では、旧モデルを維持する。
         return E_OUTOFMEMORY;
     }
+}
+
+static void SetOperationFailureMessage(const char* format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+
+    std::vsnprintf(
+        g_OperationFailureMessage,
+        sizeof(g_OperationFailureMessage),
+        format,
+        arguments);
+
+    va_end(arguments);
 }

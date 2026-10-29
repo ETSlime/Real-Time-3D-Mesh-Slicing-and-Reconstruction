@@ -2,6 +2,7 @@
 #include "model.h"
 #include <memory>
 #include <vector>
+#include <cstdint>
 
 //=============================================================================
 // ある時点のモデル形状とマテリアル情報を保持する
@@ -50,6 +51,12 @@ private:
     std::vector<VERTEX_3D> m_Vertices;
     std::vector<unsigned short> m_Indices;
     std::vector<SUBSET> m_Subsets;
+
+    // 保存時点の三角形と破片番号の対応表。
+    std::vector<std::uint64_t> m_TrianglePieceIds;
+
+    // 保存時点の、次に使用する破片番号。
+    std::uint64_t m_NextPieceId = 1;
 
     // テクスチャ参照の取得が完了したことを示す。
     bool m_HasTextureReferences = false;
