@@ -60,4 +60,7 @@ private:
 
     // テクスチャ参照の取得が完了したことを示す。
     bool m_HasTextureReferences = false;
+
+    // 保存したモデル状態の切断回数。
+    std::uint32_t m_CutCount = 0;
 };

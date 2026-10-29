@@ -838,6 +838,55 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponent(
     return result;
 }
 
+template <class VertexType>
+bool MeshCutter::ClassifyInputSurface(const CutContext<VertexType>& context, bool& closed)
+{
+    // 同一破片内では材質境界をまたいで辺を数える。
+    // pairのfirstは面数、secondは辺方向の符号和。
+    std::map<IndexPair, std::pair<unsigned, int>> edges;
+    for (const auto& ids : context.inputVertexIds)
+    {
+        for (std::size_t start = 0; start < ids.size(); start += 3)
+        {
+            for (std::size_t corner = 0; corner < 3; ++corner)
+            {
+                const std::size_t a = ids[start + corner];
+                const std::size_t b = ids[start + (corner + 1) % 3];
+                if (a == b)
+                    return false;
+
+                auto& record = edges[std::minmax(a, b)];
+                ++record.first;
+                record.second += a < b ? 1 : -1;
+                if (record.first > 2)
+                {
+                    // 非多様体の辺を、開いた境界として扱わない。
+                    return false;
+                }
+            }
+        }
+    }
+    closed = !edges.empty();
+    for (const auto& edge : edges)
+    {
+        if (edge.second.first == 1)
+            closed = false;
+    }
+    if (closed)
+    {
+        // 閉じた立体では面の向きも整合している必要がある。
+        for (const auto& edge : edges)
+        {
+            if (edge.second.second != 0)
+                return false;
+        }
+    }
+
+    // 開いた表面は入力の各面の向きを維持する。
+    // 入力の法線や不一致の面順を自動修正する機能ではない。
+    return !edges.empty();
+}
+
 template <class VertexType, class Accept>
 MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponentAttempt(
     const std::vector<std::vector<VertexType>>& inputSubsets, const Plane& plane,
@@ -859,6 +908,14 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponentAttempt(
         return ModelResult<VertexType>{};
     }
 
+    // 入力の境界から分類し、封口失敗を理由に表面モードへ切り替えない。
+    bool closedInput = false;
+    if (!ClassifyInputSurface(context, closedInput))
+    {
+        result.status = Status::OpenOrAmbiguousContour;
+        return result;
+    }
+
     // 2. 材質単位で原表面を切り分け、モデル共通の交線を収集する。
     for (std::size_t index = 0; index < inputSubsets.size(); ++index)
     {
@@ -876,40 +933,65 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponentAttempt(
         return ModelResult<VertexType>{};
     }
 
-    // 3. 実際に両側を分ける辺だけから閉輪郭を作る。
-    std::vector<std::vector<std::size_t>> loops;
-    if (!BuildClosedContours(context.adjacency, loops))
-    {
-        result.status = Status::OpenOrAmbiguousContour;
-        return result;
-    }
-    if (loops.empty())
+    // 開いた表面でも、有効な切口線分が必要。
+    // 頂点接触や同側の接触だけでは、成功として移動しない。
+    const bool hasCutSegment = std::any_of(
+        context.adjacency.begin(), context.adjacency.end(),
+        [](const auto& neighbors) { return !neighbors.empty(); });
+    if (!hasCutSegment)
     {
         return ModelResult<VertexType>{};
     }
-    const std::vector<Point2> projected = ProjectCutNodesToPlane(context.nodes, plane);
-    if (HasNestedContours(loops, projected))
+
+    // 片側が消えた場合は、分割成功として移動しない。
+    const bool hasNegativeSurface = std::any_of(
+        result.subsets.begin(), result.subsets.end(),
+        [](const auto& surface) { return !surface.negative.empty(); });
+    const bool hasPositiveSurface = std::any_of(
+        result.subsets.begin(), result.subsets.end(),
+        [](const auto& surface) { return !surface.positive.empty(); });
+    if (!hasNegativeSurface || !hasPositiveSurface)
     {
-        result.status = Status::UnsupportedHole;
-        return result;
+        return ModelResult<VertexType>{};
     }
 
-    // 4. 境界分割を維持した三角形群から、両側の封口を作る。
-    std::vector<TriangleIndices> capTriangles;
-    if (!TriangulateContours(loops, projected, epsilon, capTriangles))
+    std::vector<std::vector<std::size_t>> loops;
+    std::vector<Point2> projected;
+    if (closedInput)
     {
-        result.status = Status::TriangulationFailed;
-        return result;
+        // 閉形状だけは、従来どおり閉輪郭から両側の封口を作る。
+        if (!BuildClosedContours(context.adjacency, loops))
+        {
+            result.status = Status::OpenOrAmbiguousContour;
+            return result;
+        }
+        if (loops.empty())
+        {
+            return ModelResult<VertexType>{};
+        }
+        projected = ProjectCutNodesToPlane(context.nodes, plane);
+        if (HasNestedContours(loops, projected))
+        {
+            result.status = Status::UnsupportedHole;
+            return result;
+        }
+        std::vector<TriangleIndices> capTriangles;
+        if (!TriangulateContours(loops, projected, epsilon, capTriangles))
+        {
+            result.status = Status::TriangulationFailed;
+            return result;
+        }
+        AppendCapTriangles(result.caps, context.nodes, projected, capTriangles, plane, options);
     }
-    AppendCapTriangles(result.caps, context.nodes, projected, capTriangles, plane, options);
-
+    // 開いた表面は切り分けた元表面だけを返し、厚みや封口を追加しない。
+    
     // 5. 実際のfloat座標へ分離移動を適用してから、面の向きを再確認する。
     for (auto& surface : result.subsets)
     {
         ApplySeparation(surface, plane, options.separation);
     }
     ApplySeparation(result.caps, plane, options.separation);
-    if (!RepairMovedCaps(result.caps, context.nodes, loops, projected, plane, options))
+    if (closedInput && !RepairMovedCaps(result.caps, context.nodes, loops, projected, plane, options))
     {
         result.status = Status::TriangulationFailed;
         return result;
@@ -925,8 +1007,8 @@ MeshCutter::ModelResult<VertexType> MeshCutter::SliceComponentAttempt(
         }
     }
 
-    // 6. 最終座標の閉合を確認した後で、新しい破片番号を確定する。
-    if (!AssignNewPieceIds(result, epsilon, nextPieceId))
+    // 6. 最終座標の接続を確認する。閉形状には閉合も要求する。
+    if (!AssignNewPieceIds(result, epsilon, nextPieceId, closedInput))
     {
         ModelResult<VertexType> stopped;
         stopped.status = Status::OpenOrAmbiguousContour;
@@ -1432,7 +1514,7 @@ bool MeshCutter::AppendSurface(SurfaceResult<VertexType>& destination, const Sur
 
 template<class VertexType>
 bool MeshCutter::AssignSidePieceIds(ModelResult<VertexType>& componentResult, 
-    bool positiveSide, float epsilon, std::uint64_t& nextPieceId)
+    bool positiveSide, float epsilon, std::uint64_t& nextPieceId, bool requireClosed)
 {
     if (nextPieceId == 0)
         return false;
@@ -1461,7 +1543,7 @@ bool MeshCutter::AssignSidePieceIds(ModelResult<VertexType>& componentResult,
     // InitializePieceIdsは、局所的な番号を1から割り当てる。
     std::uint64_t localNextPieceId = 1;
 
-    if (!InitializePieceIds(sideInput, epsilon, sidePieceIds, localNextPieceId, true))
+    if (!InitializePieceIds(sideInput, epsilon, sidePieceIds, localNextPieceId, requireClosed))
         return false;
 
     const std::uint64_t pieceCount = localNextPieceId - 1;
@@ -1514,7 +1596,7 @@ bool MeshCutter::AssignSidePieceIds(ModelResult<VertexType>& componentResult,
 
 template<class VertexType>
 bool MeshCutter::AssignNewPieceIds(ModelResult<VertexType>& componentResult, 
-    float epsilon, std::uint64_t& nextPieceId)
+    float epsilon, std::uint64_t& nextPieceId, bool requireClosed)
 {
     if (nextPieceId == 0)
         return false;
@@ -1523,11 +1605,11 @@ bool MeshCutter::AssignNewPieceIds(ModelResult<VertexType>& componentResult,
     std::uint64_t availableId = nextPieceId;
 
     // 負側の原表面と封口を、一緒に採番する。
-    if (!AssignSidePieceIds(componentResult, false, epsilon, availableId))
+    if (!AssignSidePieceIds(componentResult, false, epsilon, availableId, requireClosed))
         return false;
 
     // 正側には、負側で使用していない番号を割り当てる。
-    if (!AssignSidePieceIds(componentResult, true, epsilon, availableId))
+    if (!AssignSidePieceIds(componentResult, true, epsilon, availableId, requireClosed))
         return false;
 
     componentResult.nextPieceId = availableId;

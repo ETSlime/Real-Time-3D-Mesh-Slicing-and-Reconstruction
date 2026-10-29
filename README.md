@@ -4,17 +4,19 @@
 
 **English** · [日本語](README_JP.md) · [中文](README_CN.md)
 
-Drag across a 3D model to split its triangle mesh, reconstruct section contours, and generate caps for both sides. Undo and redo cuts, drop another OBJ into the window, and inspect the result in solid or wireframe mode.
+Drag across a 3D model to split its triangle mesh. Closed pieces receive reconstructed section caps; open surfaces are clipped without caps. Undo and redo cuts, drop another OBJ into the window, and inspect the result in solid or wireframe mode.
 
 ## Features
 
 - **Interactive plane slicing:** a mouse stroke defines a plane through the perspective camera.
 - **Surface reconstruction:** half-space clipping generates both halves and interpolates positions, normals, vertex colors, and UVs.
 - **Contour-based caps:** shared intersection nodes and adjacency recover closed contours; ear clipping supports simple concave contours and separate non-nested loops.
+- **Open surfaces and mixed cuts:** each connected piece is classified automatically. Open surfaces are clipped without caps; a single operation can also cut and cap closed pieces.
 - **Materials and pieces:** contours span material groups within each piece. Persistent IDs support targeted piece cuts while uncut pieces stay in place; generated surfaces and caps can be cut again.
 - **Undo / redo:** two snapshot stacks restore geometry and materials; a successful new cut after undo clears the redo branch.
 - **OBJ drag and drop:** successful loading replaces the model, resets its presentation and camera, and clears editing history. Failed loading retains the current model and history.
 - **Inspection:** F1 toggles solid/wireframe; F3 toggles the cutting-plane preview. On-screen control hints appear in both Debug and Release.
+- **Model statistics:** displays successful cuts represented by the current state, independent shapes, and expanded vertex count. Statistics follow undo/redo; failed cuts do not increase the cut count.
 - **Staged replacement:** replacement CPU arrays and GPU buffers are prepared before the displayed model is released.
 
 ## Controls
@@ -49,7 +51,7 @@ F3 shows the most recently attempted plane; a visible preview does not guarantee
 1. Open the Windows Visual Studio solution/project and use C++17.
 2. Configure the project's DirectX 11, DirectXMath, input, and D3DX11 dependencies. D3DX11 headers, libraries, and matching runtime dependencies must be available.
 3. Ensure shader and asset paths resolve from the configured working directory, then build and run.
-4. Drop a triangulated, closed OBJ with normals, UVs, and valid MTL/texture references into the window.
+4. Drop a triangulated OBJ with normals, UVs, and valid MTL/texture references into the window.
 5. Cut the model, inspect its triangles with F1, and use Ctrl+Z / Ctrl+Y to compare editing states.
 
 Keep MTL and texture files at the paths referenced by the assets. The importer expects its supported OBJ/MTL format; ASCII paths and referenced filenames without spaces are the simplest choice. Dropped paths are converted to the loader's Windows ANSI code page, rather than imported through a full Unicode path pipeline.
@@ -80,8 +82,8 @@ Topics include screen rays, plane transforms, clipping, attribute interpolation,
 
 ## Scope and limitations
 
-- Intended for closed, consistently outward-wound, non-self-intersecting manifold meshes; not a general mesh repair tool.
-- Plane cuts support simple concave sections and separate non-nested loops. Holes and arbitrary solid Boolean operations are unsupported.
+- Supports closed pieces and open surfaces. Closed pieces require consistent winding; open surfaces retain input face orientation. Nonmanifold edges remain unsupported; this is not general mesh repair.
+- Closed-piece caps support simple concave sections and separate non-nested loops, without holes. Open surfaces are not thickened or capped, and missing faces are not repaired.
 - Tangency may leave geometry unchanged. Full-face coplanarity during a split, ambiguous connectivity, or unsafe triangulation retains the current valid model.
 - Vertices use float storage. Finite tolerances and at most two local refinement steps do not guarantee arbitrary scales, narrow features, or unlimited cuts. Required planar repair may also be refused when UV/color features would be altered beyond tolerance.
 - The application accepts at most 65,535 expanded vertices. History stores full CPU geometry and piece IDs without a count/memory budget or persistence; texture references are shared.

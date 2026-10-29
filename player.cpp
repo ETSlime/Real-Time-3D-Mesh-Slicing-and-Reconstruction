@@ -11,7 +11,7 @@
 #include "debugproc.h"
 #include "player.h"
 #include "ModelHistory.h"
-
+#include <unordered_set>
 
 //*****************************************************************************
 // マクロ定義
@@ -188,6 +188,9 @@ void UpdatePlayer(void)
 
     PrintDebugProc("Ctrl + Z: 元に戻す\n");
     PrintDebugProc("Ctrl + Y / Ctrl + Shift + Z: やり直す\n");
+
+    // 現在のモデル状態に対応する統計を毎フレーム表示する。
+    PrintModelStatistics(g_Player.model.modelData);
 
     // 保存した文字列を、そのまま毎フレーム表示する。
     if (g_OperationFailureMessage[0] != '\0')
@@ -1307,6 +1310,10 @@ HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model,
 
         newModelData->NextPieceId = nextPieceId;
 
+        // 成功時に取り付けるモデルへ、更新後の切断回数を設定する。
+        // 現在表示中のモデルは、ここでは変更しない。
+        newModelData->CutCount = model->modelData->CutCount + 1;
+
         // 新しい各サブセットが、テクスチャ参照を1つずつ所有する。
         // 旧モデルのReleaseより前に参照数を増やす。
         for (std::size_t subsetIndex = 0; subsetIndex < totalSubsetCount; ++subsetIndex)
@@ -1350,6 +1357,43 @@ HRESULT PlayerCutSupport::TryUpdateModel(DX11_MODEL* model,
         // 旧モデルを破棄する前のメモリ確保失敗では、旧モデルを維持する。
         return E_OUTOFMEMORY;
     }
+}
+
+// 現在のモデルに含まれる独立形状の数を調べる。
+static std::size_t CountIndependentShapes(const MODEL* model)
+{
+    if (model == nullptr || model->VertexNum == 0)
+        return 0;
+
+    // 初回切断前は、読み込んだモデルを1つの形状として扱う。
+    if (model->TrianglePieceIds.empty())
+        return 1;
+
+    std::unordered_set<std::uint64_t> uniqueIds;
+
+    // モデル全体の三角形番号配列を1回だけ走査する。
+    for (const std::uint64_t pieceId : model->TrianglePieceIds)
+    {
+        // 0は未割り当て番号なので、集計しない。
+        if (pieceId != 0)
+            uniqueIds.insert(pieceId);
+    }
+
+    return uniqueIds.size();
+}
+
+static void PrintModelStatistics(const MODEL* model)
+{
+    if (model == nullptr)
+        return;
+
+    const std::size_t shapeCount = CountIndependentShapes(model);
+
+    PrintDebugProc(
+        "切断回数：%u  独立形状数：%zu  頂点数（展開後）：%u\n",
+        static_cast<unsigned int>(model->CutCount),
+        shapeCount,
+        static_cast<unsigned int>(model->VertexNum));
 }
 
 static void SetOperationFailureMessage(const char* format, ...)

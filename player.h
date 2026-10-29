@@ -117,5 +117,9 @@ bool ReplacePlayerModel(const char* FileName);
 void CancelPlayerCutGesture(void);
 // 取り消しとやり直しのショートカットを処理する。
 static bool UpdateModelHistoryShortcuts(void);
+// 現在のモデルに含まれる独立形状の数を調べる。
+static std::size_t CountIndependentShapes(const MODEL* model);
+// 現在表示しているモデルの統計情報を登録する。
+static void PrintModelStatistics(const MODEL* model);
 // 書式付きメッセージを整形して保存する。
 static void SetOperationFailureMessage(const char* format, ...);

@@ -4,9 +4,9 @@
 
 ## 1. Overview and scope
 
-Mesh Cut is an interactive mesh-slicing demonstration built with C++, DirectX 11, and DirectXMath. A mouse stroke defines a cutting plane. The CPU clips the input triangles, reconstructs section contours, builds caps for both halves, and prepares replacement rendering resources.
+Mesh Cut is an interactive mesh-slicing demonstration built with C++, DirectX 11, and DirectXMath. A mouse stroke defines a cutting plane. The CPU clips triangles, reconstructs and caps sections for closed pieces, leaves open surfaces uncapped, and prepares replacement rendering resources.
 
-The current implementation supports plane slicing, intersection-attribute interpolation, capping of simple concave contours, multiple separate non-nested contours, and repeated cuts of the resulting mesh. OBJ drag and drop replaces the model; F1 switches solid/wireframe rendering, and F3 toggles the cutting-plane visualization. Two-stack snapshot history supports undo/redo, with on-screen controls in both Debug and Release.
+The implementation supports plane slicing, attribute interpolation, simple concave caps and separate non-nested sections for closed pieces, uncapped open-surface clipping, and repeated cuts. OBJ drag and drop replaces the model; F1 switches solid/wireframe rendering, and F3 toggles the cutting-plane visualization. Two-stack snapshot history supports undo/redo, with on-screen controls in both Debug and Release.
 
 A cut reconstructs triangle surfaces and offsets both sides. It does not generate collision shapes or simulate separate rigid bodies.
 
@@ -31,8 +31,8 @@ The pipeline is:
 2. Convert the plane to model-local space.
 3. Expand subset triangles and organize them by persistent piece IDs.
 4. Clip across materials within each piece, sharing intersections and collecting section segments.
-5. Merge intersection nodes, recover closed contours, and project them to 2D.
-6. Reject unsupported nested contours and triangulate caps with ear clipping.
+5. Merge section nodes; for closed pieces, recover loops and project them to 2D.
+6. For closed pieces, reject unsupported nesting and ear-clip caps; skip capping for open surfaces.
 7. Generate cap attributes, offset only split pieces, validate final connectivity, and assign new IDs.
 8. Stage every subset, capture the pre-cut state, prepare CPU/GPU resources, and commit geometry and history.
 
@@ -132,6 +132,16 @@ Positive and negative distances identify the two sides. This normal belongs to t
 
 A piece without vertices strictly on both sides is not cut. The tolerance depends on asset scale and is not a universal precision guarantee.
 
+### 5.1 Classifying open surfaces and closed pieces
+
+`ClassifyInputSurface()` reuses shared position IDs and edge connectivity. At the current effective tolerance, it counts undirected edges across materials within each independent component. Two incident faces on every edge indicate a closed piece, with shared-edge winding also checked. A boundary edge with one incident face identifies an open surface. Overfull or collapsed edges are still rejected.
+
+`SliceComponentAttempt()` shares clipping and stroke acceptance between both paths. Closed pieces reconstruct loops and caps; open surfaces skip loop recovery, hole checks, and capping, returning separated surfaces instead. A valid section segment and nonempty output on both sides are still required. Mixed components are processed independently and committed together; any algorithm failure cancels the update. Failed capping never triggers fallback to an open surface.
+
+`AssignSidePieceIds()` / `AssignNewPieceIds()` pass `requireClosed` to existing connectivity checks: closed output must remain closed, while open output may have boundaries. No persistent fields or snapshot-layout changes are needed. Piece IDs can now identify open or closed connected surfaces, not necessarily volumes.
+
+Boundary-based classification cannot distinguish intentional sheets from damaged shells with missing faces. Both use the open path. Original face orientation is retained on open surfaces, without automatic winding or normal repair.
+
 ## 6. Half-space clipping and attributes
 
 ### 6.1 Retaining each half-space
@@ -192,7 +202,7 @@ Existing-edge cuts can therefore succeed, while exterior tangency can return `Un
 
 `nodes[i]` stores a section vertex; `adjacency[i]` stores connected node indices. Each segment AB is registered in both directions.
 
-`BuildClosedContours()` ignores zero-degree contact nodes outside actual section segments and requires exactly two neighbors per participating node. It starts at an unvisited node and follows the neighbor that is not the previous node.
+These loop requirements apply only to closed-piece capping; open surfaces need no closed loops. `BuildClosedContours()` ignores zero-degree contact nodes outside actual section segments and requires exactly two neighbors per participating node. It starts at an unvisited node and follows the neighbor that is not the previous node.
 
 - Returning to the start completes a contour.
 - Reaching another visited node before closing fails.
@@ -257,7 +267,7 @@ On `OpenOrAmbiguousContour` or `TriangulationFailed`, the piece may retry the sa
 
 ## 11. Caps, normals, and UVs
 
-`AppendCapTriangles()` turns these triples into caps for both halves. `CreateCapVertex()` copies the intersection vertex and replaces its normal and UV.
+For closed pieces only, `AppendCapTriangles()` turns these triples into caps for both halves. `CreateCapVertex()` copies the intersection vertex and replaces its normal and UV.
 
 | Half | Outward cap normal | Triangle order |
 |---|---|---|
@@ -284,23 +294,23 @@ The default is 1.5 local units per side, producing a three-unit gap between orig
 
 ## 12. Piece results, materials, and model updates
 
-`SliceModel()` reconstructs contours across subsets within each persistent piece. `ModelResult::subsets` stores cut surfaces under their original material groups, `caps` stores caps separately, and `unchangedSubsets` preserves uncut pieces with per-triangle IDs. An individual material group need not have a closed contour; the related faces of the whole piece provide it.
+`SliceModel()` reconstructs contours across subsets within each persistent piece. `ModelResult::subsets` stores cut surfaces under their original material groups, `caps` stores caps separately, and `unchangedSubsets` preserves uncut pieces with per-triangle IDs. A closed piece need not close within each material group. Open surfaces return empty `caps`, with surfaces and IDs using the same result interface.
 
-- `Cut`: adopt new surfaces and caps; separate only pieces actually split.
+- `Cut`: adopt new surfaces and any caps required for closed pieces; separate only split components.
 - Piece `Unchanged`: retain original geometry, attributes, and IDs without separation.
 - Any other piece failure: cancel the entire model update rather than commit partial success.
 - No changes: skip resource reconstruction and history insertion.
 
-At final displaced coordinates, each undirected edge in generated geometry must have exactly two incident faces. This requirement is not relaxed to accept a failed result. New piece IDs are staged with geometry and installed only on successful model replacement.
+At final displaced coordinates, closed output requires exactly two incident faces per edge. Open output may have boundary edges with one incident face; edges with more than two remain rejected. New piece IDs are staged with geometry and installed only on successful model replacement.
 
 `CutMeshes()` preserves original surface/material associations. Caps reuse an existing material, without creating a dedicated cap material. After capacity checks, `TryUpdateModel()` creates expanded vertices, sequential indices, subset/material records, and independent GPU buffers. Only full preparation releases the old model. The current 16-bit representation accepts at most 65,535 expanded vertices.
 
 | Status | Meaning |
 |---|---|
 | `Unchanged` | Retain the original piece or model |
-| `Cut` | New surfaces, caps, and piece IDs are prepared |
+| `Cut` | New surfaces, required caps, and piece IDs are prepared |
 | `InvalidInput` | Input layout, IDs, or settings violate requirements |
-| `OpenOrAmbiguousContour` | Open, branching, coplanar-ambiguous, or invalid generated connectivity |
+| `OpenOrAmbiguousContour` | A closed-piece contour is open, or connectivity is branching, coplanar-ambiguous, or invalid; not a blanket rejection of open surfaces |
 | `UnsupportedHole` | Unsupported nested contours |
 | `TriangulationFailed` | Contour triangulation or required safe retriangulation could not finish |
 
@@ -406,7 +416,7 @@ Build the Windows Visual Studio project with C++17 and its DirectX 11, DirectXMa
 
 | Area | Current scope |
 |---|---|
-| Input geometry | Closed, consistently outward-wound, non-self-intersecting manifolds are intended; this is not general mesh repair or proof of all self-intersection detection |
+| Input geometry | Closed pieces and open surfaces are supported. Closed pieces check shared-edge winding; open surfaces retain orientation. Boundary classification does not distinguish sheets from damaged shells, repair/thicken input, or prove absence of self-intersections |
 | Sections | Simple concave contours and separate non-nested loops; no holes, curved blades, or arbitrary solid Boolean operations |
 | Degeneracy and scale | Tangency may be unchanged; full-face coplanarity or ambiguous connectivity during a split may be rejected. Float storage and finite tolerances do not guarantee arbitrary scales, narrow features, or unlimited cuts; projection/merging may lose sub-tolerance details |
 | Attributes | A required repair may be refused if it would flatten UV seams beyond tolerance, non-affine UVs, or nonuniform colors; ordinary multi-material meshes and UV seams remain supported |
@@ -415,6 +425,6 @@ Build the Windows Visual Studio project with C++17 and its DirectX 11, DirectXMa
 
 Clipping visits triangles; maps track shared edges and segments, while some position matching still uses linear search. Ear-candidate testing for an n-point contour can take $O(n^3)$ in the worst case. Boundary restoration, quality improvement, and bounded retries add work, so the full pipeline is not claimed to be linear. Temporary memory grows with input/output geometry, topology maps, and contours. Replacement holds old and new resources simultaneously; history additionally owns CPU geometry and IDs while sharing texture references.
 
-Validation covers multi-material meshes, concave sections, existing edges/vertices, targeted piece cuts, overlapping piece identities, and repeated cuts, checking edge incidence, winding, and volume error. Passing these cases does not guarantee success on every input.
+Validation covers materials, concave sections, existing edges/vertices, targeted pieces, overlaps, and repeated cuts. Plane, open-character, and mixed open/closed tests check surface area, attributes, and IDs; closed pieces additionally check closure, winding, and volume error. Passing these cases does not guarantee success on every input.
 
 Suggested demonstration: cube cut → cross-material cap → concave L-prism section → cut only the middle piece → undo/redo and branching → F1/F3 inspection → OBJ reload.

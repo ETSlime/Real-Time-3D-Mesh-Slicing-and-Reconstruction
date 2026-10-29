@@ -496,13 +496,13 @@ private:
     // falseの場合、呼び出し元はcomponentResultを採用しない。
     template<class VertexType>
     static bool AssignSidePieceIds(ModelResult<VertexType>& componentResult,
-        bool positiveSide, float epsilon, std::uint64_t& nextPieceId);
+        bool positiveSide, float epsilon, std::uint64_t& nextPieceId, bool requireClosed = true);
 
     // 両側の新しい破片番号を割り当てる。
     // 両側とも成功した場合だけ、呼び出し元のnextPieceIdを更新する。
     template<class VertexType>
     static bool AssignNewPieceIds(ModelResult<VertexType>& componentResult,
-        float epsilon, std::uint64_t& nextPieceId);
+        float epsilon, std::uint64_t& nextPieceId, bool requireClosed = true);
 
     // ------------------------------------------------------------------------
     // 共通交点、三角化、移動後の検証を担当する内部処理
@@ -616,6 +616,11 @@ private:
         const Plane& plane, float separation);
 
     // 1つの許容誤差で、分離後の閉合確認と採番までを試みる。
+    // 切断前の共通位置番号から、閉形状か開いた表面かを判定する。
+    // 閉形状の封口失敗を、開いた表面へ変更する処理ではない。
+    template <class VertexType>
+    static bool ClassifyInputSurface(const CutContext<VertexType>& context, bool& closed);
+
     template <class VertexType, class Accept>
     static ModelResult<VertexType> SliceComponentAttempt(
         const std::vector<std::vector<VertexType>>& inputSubsets, const Plane& plane,

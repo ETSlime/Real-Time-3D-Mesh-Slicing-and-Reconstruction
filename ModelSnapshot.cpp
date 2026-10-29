@@ -62,6 +62,9 @@ std::unique_ptr<ModelSnapshot> ModelSnapshot::Capture(const DX11_MODEL* model)
 
     snapshot->m_HasTextureReferences = true;
 
+    // 形状と対応する切断回数を保存する。
+    snapshot->m_CutCount = model->modelData->CutCount;
+
     return snapshot;
 }
 
@@ -177,6 +180,9 @@ HRESULT ModelSnapshot::Restore(DX11_MODEL* target) const
 
         // 必要なリソースの準備が完了したため、旧モデルを解放する。
         UnloadModel(target);
+
+        // スナップショットと同じ切断回数へ戻す。
+        restoredModel->CutCount = m_CutCount;
 
         // CPU 配列の所有権を復元後の MODEL に移す。
         restoredModel->VertexArray = restoredVertices.release();
